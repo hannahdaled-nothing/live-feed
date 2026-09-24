@@ -23,6 +23,7 @@
       }
     }
     * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
     body {
       margin: 0;
       min-height: 100vh;
@@ -35,9 +36,8 @@
       padding: 24px 16px;
       gap: 16px;
     }
+    header, .controls, .hat, .stage { width: 100%; max-width: 960px; }
     header {
-      width: 100%;
-      max-width: 960px;
       display: flex;
       align-items: center;
       justify-content: space-between;
@@ -45,25 +45,25 @@
       flex-wrap: wrap;
     }
     h1 { font-size: 20px; margin: 0; font-weight: 600; }
+    h2 { font-size: 15px; margin: 0; font-weight: 600; }
     .status { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
     .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); }
     .live .dot { background: var(--accent); animation: pulse 1.4s infinite; }
     .live { color: var(--text); }
     @keyframes pulse { 50% { opacity: .35; } }
     .stage {
-      width: 100%;
-      max-width: 960px;
       aspect-ratio: 16 / 9;
       background: #000;
       border: 1px solid var(--border);
       border-radius: 12px;
       overflow: hidden;
       position: relative;
-      display: grid;
-      place-items: center;
     }
-    video { width: 100%; height: 100%; object-fit: contain; }
-    video.mirror { transform: scaleX(-1); }
+    /* The video only feeds the canvas; it stays in the DOM so every browser keeps decoding it. */
+    video { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+    canvas { width: 100%; height: 100%; object-fit: contain; display: block; }
+    canvas.mirror { transform: scaleX(-1); }
+    canvas.picking { cursor: crosshair; }
     .message {
       position: absolute;
       inset: 0;
@@ -73,9 +73,20 @@
       text-align: center;
       color: #ccc;
     }
+    .banner {
+      position: absolute;
+      left: 50%;
+      top: 12px;
+      transform: translateX(-50%);
+      background: rgba(0, 0, 0, .7);
+      color: #fff;
+      padding: 6px 14px;
+      border-radius: 999px;
+      font-size: 13px;
+      pointer-events: none;
+      white-space: nowrap;
+    }
     .controls {
-      width: 100%;
-      max-width: 960px;
       display: flex;
       gap: 10px;
       flex-wrap: wrap;
@@ -90,9 +101,38 @@
       color: var(--text);
       cursor: pointer;
     }
+    button.primary { background: var(--text); color: var(--bg); border-color: var(--text); }
     select { max-width: 100%; }
     button:hover { border-color: var(--muted); }
     .clock { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; font-size: 13px; }
+
+    .hat {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px;
+      display: grid;
+      gap: 14px;
+    }
+    .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .label { color: var(--muted); font-size: 13px; min-width: 88px; }
+    .chip {
+      width: 28px; height: 28px; border-radius: 50%;
+      border: 1px solid var(--border);
+      background: repeating-conic-gradient(#ccc 0 25%, #fff 0 50%) 0 0 / 10px 10px;
+    }
+    .swatches { display: flex; gap: 8px; flex-wrap: wrap; }
+    .swatch {
+      width: 34px; height: 34px; padding: 0; border-radius: 50%;
+      border: 2px solid transparent;
+      box-shadow: inset 0 0 0 1px rgba(0,0,0,.15);
+    }
+    .swatch[aria-pressed="true"] { border-color: var(--text); box-shadow: inset 0 0 0 2px var(--panel); }
+    input[type=color] {
+      width: 34px; height: 34px; padding: 0; border: none; background: none; cursor: pointer;
+    }
+    input[type=range] { flex: 1; min-width: 140px; max-width: 320px; }
+    .hint { color: var(--muted); font-size: 13px; margin: 0; }
   </style>
 </head>
 <body>
@@ -102,8 +142,10 @@
   </header>
 
   <div class="stage">
-    <video id="video" class="mirror" autoplay playsinline muted></video>
+    <video id="video" autoplay playsinline muted></video>
+    <canvas id="canvas" class="mirror"></canvas>
     <div class="message" id="message">Requesting camera access…</div>
+    <div class="banner" id="banner" hidden></div>
   </div>
 
   <div class="controls">
@@ -114,17 +156,292 @@
     <span class="clock" id="clock"></span>
   </div>
 
-  <script>
+  <section class="hat">
+    <div class="row">
+      <h2>Hat colour</h2>
+      <label class="row" style="margin-left:auto"><input type="checkbox" id="effectOn" checked> Effect on</label>
+    </div>
+    <div class="row">
+      <span class="label">1. Your hat</span>
+      <span class="chip" id="sampleChip" title="Sampled hat colour"></span>
+      <button id="pickBtn" class="primary">Tap your hat in the video</button>
+    </div>
+    <div class="row">
+      <span class="label">2. New colour</span>
+      <div class="swatches" id="swatches"></div>
+      <input type="color" id="customColor" value="#e63946" aria-label="Custom colour">
+    </div>
+    <div class="row">
+      <span class="label">Sensitivity</span>
+      <input type="range" id="tolerance" min="0" max="100" value="40">
+      <span class="hint" id="tolValue">40</span>
+    </div>
+    <div class="row">
+      <label class="row"><input type="checkbox" id="headOnly" checked> Only change colours around my head</label>
+      <span class="hint" id="faceStatus"></span>
+    </div>
+    <p class="hint">Tip: if patches of the hat stay the original colour, raise the sensitivity. If your hair or the background changes too, lower it.</p>
+  </section>
+
+  <script type="module">
     const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
     const message = document.getElementById('message');
+    const banner = document.getElementById('banner');
     const statusEl = document.getElementById('status');
     const statusText = document.getElementById('statusText');
     const cameraSelect = document.getElementById('cameraSelect');
     const toggleBtn = document.getElementById('toggleBtn');
     const mirrorBtn = document.getElementById('mirrorBtn');
     const snapBtn = document.getElementById('snapBtn');
-    let stream = null;
+    const pickBtn = document.getElementById('pickBtn');
+    const sampleChip = document.getElementById('sampleChip');
+    const swatchesEl = document.getElementById('swatches');
+    const customColor = document.getElementById('customColor');
+    const tolerance = document.getElementById('tolerance');
+    const tolValue = document.getElementById('tolValue');
+    const effectOn = document.getElementById('effectOn');
+    const headOnly = document.getElementById('headOnly');
+    const faceStatus = document.getElementById('faceStatus');
 
+    const MAX_WIDTH = 1280;
+    const PALETTE = ['#e63946', '#f77f00', '#fcbf49', '#2a9d8f', '#06d6a0', '#118ab2', '#3a0ca3', '#9d4edd', '#ff5d8f', '#6f4e37', '#ffffff', '#111111'];
+
+    let stream = null;
+    let picking = false;
+    let key = null;            // sampled hat colour as {h, s, v, css}
+    let target = hexToHsv(PALETTE[0]);
+    let faceDetector = null;   // null until loaded; false if it failed
+    let faceBox = null;        // smoothed face box in canvas pixels
+    let lastFaceSeen = 0;
+    let frameCount = 0;
+
+    // ---------- colour helpers ----------
+    function rgbToHsv(r, g, b) {
+      r /= 255; g /= 255; b /= 255;
+      const max = Math.max(r, g, b), min = Math.min(r, g, b), c = max - min;
+      let h = 0;
+      if (c) {
+        if (max === r) h = ((g - b) / c + 6) % 6;
+        else if (max === g) h = (b - r) / c + 2;
+        else h = (r - g) / c + 4;
+      }
+      return { h, s: max ? c / max : 0, v: max };   // h in [0, 6)
+    }
+    function hexToHsv(hex) {
+      const n = parseInt(hex.slice(1), 16);
+      return { ...rgbToHsv(n >> 16, (n >> 8) & 255, n & 255), css: hex };
+    }
+
+    // ---------- the recolour pass ----------
+    function recolour(img, x0, y0, x1, y1) {
+      const d = img.data, W = img.width;
+      const t = tolerance.value / 100;
+      const chromatic = key.s > 0.22 && key.v > 0.12;
+      const hueTol = 0.15 + t * 1.2;          // hue units (6 = full circle)
+      const satMin = Math.max(0.08, key.s * (0.55 - t * 0.35));
+      const valTol = 0.06 + t * 0.35;
+      const neutralSatMax = 0.12 + t * 0.25;
+      const kv = Math.max(key.v, 0.04);
+      const th = target.h, ts = target.s, tv = target.v;
+
+      for (let y = y0; y < y1; y++) {
+        let i = (y * W + x0) * 4;
+        for (let x = x0; x < x1; x++, i += 4) {
+          const r = d[i], g = d[i + 1], b = d[i + 2];
+          const max = r > g ? (r > b ? r : b) : (g > b ? g : b);
+          const min = r < g ? (r < b ? r : b) : (g < b ? g : b);
+          const v = max / 255, c = max - min, s = max ? c / max : 0;
+
+          let m;
+          if (chromatic) {
+            if (s < satMin || v < 0.06) continue;
+            let h;
+            if (max === r) h = ((g - b) / c + 6) % 6;
+            else if (max === g) h = (b - r) / c + 2;
+            else h = (r - g) / c + 4;
+            let dh = Math.abs(h - key.h);
+            if (dh > 3) dh = 6 - dh;
+            m = 1 - dh / hueTol;
+          } else {
+            if (s > neutralSatMax) continue;
+            m = 1 - Math.abs(v - key.v) / valTol;
+          }
+          if (m <= 0) continue;
+          const a = m > 0.5 ? 1 : m * 2;       // soft edge
+
+          // Keep the pixel's shading relative to the hat's base colour.
+          let nv = tv * (v / kv);
+          if (tv < 0.15) nv = tv + (v - key.v) * 0.6;   // darkening to black: keep some folds visible
+          nv = nv < 0 ? 0 : nv > 1 ? 1 : nv;
+          const ns = chromatic ? Math.min(1, ts * Math.min(1.2, s / key.s)) : ts;
+
+          // HSV -> RGB
+          const cc = nv * ns, hh = th, xx = cc * (1 - Math.abs((hh % 2) - 1)), mm = nv - cc;
+          let rr, gg, bb;
+          if (hh < 1) { rr = cc; gg = xx; bb = 0; }
+          else if (hh < 2) { rr = xx; gg = cc; bb = 0; }
+          else if (hh < 3) { rr = 0; gg = cc; bb = xx; }
+          else if (hh < 4) { rr = 0; gg = xx; bb = cc; }
+          else if (hh < 5) { rr = xx; gg = 0; bb = cc; }
+          else { rr = cc; gg = 0; bb = xx; }
+          d[i]     = r + ((rr + mm) * 255 - r) * a;
+          d[i + 1] = g + ((gg + mm) * 255 - g) * a;
+          d[i + 2] = b + ((bb + mm) * 255 - b) * a;
+        }
+      }
+    }
+
+    // ---------- face detection (limits the effect to the head area) ----------
+    async function loadFaceDetector() {
+      faceStatus.textContent = 'Loading head tracker…';
+      try {
+        const v = '0.10.14';
+        const { FilesetResolver, FaceDetector } = await import(`https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${v}/vision_bundle.mjs`);
+        const files = await FilesetResolver.forVisionTasks(`https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${v}/wasm`);
+        faceDetector = await FaceDetector.createFromOptions(files, {
+          baseOptions: {
+            modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite',
+            delegate: 'GPU'
+          },
+          runningMode: 'VIDEO',
+          minDetectionConfidence: 0.5
+        });
+        faceStatus.textContent = '';
+      } catch (err) {
+        console.warn('Face detector unavailable', err);
+        faceDetector = false;
+        faceStatus.textContent = 'Head tracker unavailable, so the whole picture will be recoloured.';
+      }
+    }
+
+    function updateFace(now) {
+      if (!faceDetector || frameCount % 2) return;   // every other frame is plenty
+      const res = faceDetector.detectForVideo(video, now);
+      const det = res.detections?.[0];
+      if (!det) return;
+      const sx = canvas.width / video.videoWidth;
+      const bb = det.boundingBox;
+      const box = { x: bb.originX * sx, y: bb.originY * sx, w: bb.width * sx, h: bb.height * sx };
+      faceBox = faceBox
+        ? { x: lerp(faceBox.x, box.x), y: lerp(faceBox.y, box.y), w: lerp(faceBox.w, box.w), h: lerp(faceBox.h, box.h) }
+        : box;
+      lastFaceSeen = now;
+    }
+    const lerp = (a, b) => a + (b - a) * 0.5;
+
+    // Where a hat can be relative to the face: wide, and well above the eyebrows.
+    function hatRegion() {
+      const W = canvas.width, H = canvas.height;
+      if (!headOnly.checked || faceDetector === false) return [0, 0, W, H];
+      if (!faceBox || performance.now() - lastFaceSeen > 800) return null;
+      const { x, y, w, h } = faceBox;
+      return [
+        Math.max(0, Math.floor(x - w * 0.6)),
+        Math.max(0, Math.floor(y - h * 1.3)),
+        Math.min(W, Math.ceil(x + w * 1.6)),
+        Math.min(H, Math.ceil(y + h * 0.2))
+      ];
+    }
+
+    // ---------- render loop ----------
+    function renderFrame(now) {
+      if (!stream) return;
+      if (video.readyState >= 2 && video.videoWidth) {
+        const scale = Math.min(1, MAX_WIDTH / video.videoWidth);
+        const w = Math.round(video.videoWidth * scale), h = Math.round(video.videoHeight * scale);
+        if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+        ctx.drawImage(video, 0, 0, w, h);
+
+        if (effectOn.checked && key) {
+          updateFace(performance.now());
+          const region = hatRegion();
+          if (region) {
+            const [x0, y0, x1, y1] = region;
+            if (x1 > x0 && y1 > y0) {
+              const img = ctx.getImageData(x0, y0, x1 - x0, y1 - y0);
+              recolour(img, 0, 0, img.width, img.height);
+              ctx.putImageData(img, x0, y0);
+            }
+          }
+          showBanner(region || faceDetector === null ? '' : 'Looking for your face…');
+        } else if (!picking) {
+          showBanner('');
+        }
+        frameCount++;
+      }
+      scheduleFrame();
+    }
+    function scheduleFrame() {
+      if ('requestVideoFrameCallback' in video) video.requestVideoFrameCallback(renderFrame);
+      else requestAnimationFrame(renderFrame);
+    }
+    function showBanner(text) {
+      if (picking) text = 'Tap on your hat';
+      banner.hidden = !text;
+      banner.textContent = text;
+    }
+
+    // ---------- picking the hat colour ----------
+    pickBtn.addEventListener('click', () => {
+      if (!stream) return;
+      picking = !picking;
+      canvas.classList.toggle('picking', picking);
+      pickBtn.textContent = picking ? 'Cancel' : 'Re-pick hat colour';
+      showBanner('');
+    });
+
+    canvas.addEventListener('click', e => {
+      if (!picking) return;
+      const rect = canvas.getBoundingClientRect();
+      const s = Math.min(rect.width / canvas.width, rect.height / canvas.height);
+      const offX = (rect.width - canvas.width * s) / 2, offY = (rect.height - canvas.height * s) / 2;
+      let px = e.clientX - rect.left;
+      if (canvas.classList.contains('mirror')) px = rect.width - px;
+      const cx = Math.round((px - offX) / s), cy = Math.round((e.clientY - rect.top - offY) / s);
+      if (cx < 0 || cy < 0 || cx >= canvas.width || cy >= canvas.height) return;
+
+      // Sample the raw frame (not the recoloured one), averaging a small patch.
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const r = 4, x0 = Math.max(0, cx - r), y0 = Math.max(0, cy - r);
+      const patch = ctx.getImageData(x0, y0, Math.min(canvas.width - x0, r * 2 + 1), Math.min(canvas.height - y0, r * 2 + 1)).data;
+      let R = 0, G = 0, B = 0, n = 0;
+      for (let i = 0; i < patch.length; i += 4) { R += patch[i]; G += patch[i + 1]; B += patch[i + 2]; n++; }
+      R /= n; G /= n; B /= n;
+      key = { ...rgbToHsv(R, G, B), css: `rgb(${R | 0}, ${G | 0}, ${B | 0})` };
+      sampleChip.style.background = key.css;
+
+      picking = false;
+      canvas.classList.remove('picking');
+      pickBtn.textContent = 'Re-pick hat colour';
+      pickBtn.classList.remove('primary');
+      showBanner('');
+      if (faceDetector === null) loadFaceDetector();
+    });
+
+    // ---------- target colour ----------
+    function setTarget(hex) {
+      target = hexToHsv(hex);
+      customColor.value = hex;
+      for (const b of swatchesEl.children) b.setAttribute('aria-pressed', String(b.dataset.color === hex));
+    }
+    for (const hex of PALETTE) {
+      const b = document.createElement('button');
+      b.className = 'swatch';
+      b.style.background = hex;
+      b.dataset.color = hex;
+      b.setAttribute('aria-label', `Colour ${hex}`);
+      b.addEventListener('click', () => setTarget(hex));
+      swatchesEl.appendChild(b);
+    }
+    customColor.addEventListener('input', () => setTarget(customColor.value));
+    setTarget(PALETTE[0]);
+
+    tolerance.addEventListener('input', () => { tolValue.textContent = tolerance.value; });
+    headOnly.addEventListener('change', () => { if (headOnly.checked && faceDetector === null) loadFaceDetector(); });
+
+    // ---------- camera ----------
     function setStatus(live, text) {
       statusEl.classList.toggle('live', live);
       statusText.textContent = text;
@@ -134,6 +451,7 @@
       if (stream) stream.getTracks().forEach(t => t.stop());
       stream = null;
       video.srcObject = null;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
     }
 
     async function start(deviceId) {
@@ -141,19 +459,21 @@
       message.hidden = false;
       message.textContent = 'Requesting camera access…';
       try {
+        const size = { width: { ideal: 1280 }, height: { ideal: 720 } };
         stream = await navigator.mediaDevices.getUserMedia({
-          video: deviceId ? { deviceId: { exact: deviceId }, width: { ideal: 1920 }, height: { ideal: 1080 } }
-                          : { width: { ideal: 1920 }, height: { ideal: 1080 } },
+          video: deviceId ? { deviceId: { exact: deviceId }, ...size } : size,
           audio: false
         });
         video.srcObject = stream;
+        await video.play().catch(() => {});
         message.hidden = true;
-        const track = stream.getVideoTracks()[0];
-        const s = track.getSettings();
+        const s = stream.getVideoTracks()[0].getSettings();
         setStatus(true, `LIVE · ${s.width}×${s.height}`);
         toggleBtn.textContent = 'Pause';
+        scheduleFrame();
         await listCameras(s.deviceId);
       } catch (err) {
+        stream = null;
         setStatus(false, 'Offline');
         message.textContent = err.name === 'NotAllowedError'
           ? 'Camera access was denied. Allow camera access for this page in your browser (and in System Settings → Privacy & Security → Camera), then reload.'
@@ -189,24 +509,21 @@
     });
 
     mirrorBtn.addEventListener('click', () => {
-      const on = video.classList.toggle('mirror');
+      const on = canvas.classList.toggle('mirror');
       mirrorBtn.textContent = `Mirror: ${on ? 'on' : 'off'}`;
     });
 
     snapBtn.addEventListener('click', () => {
       if (!stream) return;
-      const canvas = document.createElement('canvas');
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      const ctx = canvas.getContext('2d');
-      if (video.classList.contains('mirror')) {
-        ctx.translate(canvas.width, 0);
-        ctx.scale(-1, 1);
-      }
-      ctx.drawImage(video, 0, 0);
+      const out = document.createElement('canvas');
+      out.width = canvas.width;
+      out.height = canvas.height;
+      const o = out.getContext('2d');
+      if (canvas.classList.contains('mirror')) { o.translate(out.width, 0); o.scale(-1, 1); }
+      o.drawImage(canvas, 0, 0);   // includes the hat recolour
       const a = document.createElement('a');
       a.download = `snapshot-${new Date().toISOString().replace(/[:.]/g, '-')}.png`;
-      a.href = canvas.toDataURL('image/png');
+      a.href = out.toDataURL('image/png');
       a.click();
     });
 
@@ -214,7 +531,7 @@
 
     if (!navigator.mediaDevices?.getUserMedia) {
       setStatus(false, 'Unsupported');
-      message.textContent = 'This browser does not support camera access. Open the page at http://localhost:8000 in Chrome, Safari, or Firefox.';
+      message.textContent = 'This browser does not support camera access. Open the page over https:// or http://localhost in Chrome, Safari, or Firefox.';
     } else {
       start();
     }
