@@ -223,6 +223,84 @@
       }
     }
 
+    // Person cutout (MediaPipe selfie segmenter), so creatures can swim behind you.
+    // It runs on a small copy of the frame; the soft mask is scaled up when drawn.
+    let segmenter = null;         // null = not loaded yet, false = failed
+    let segMask = null;           // latest confidence mask, SEG_W × SEG_H, 0..1 = how sure it's you
+    const SEG_W = 256, SEG_H = 144;
+    const segIn = Object.assign(document.createElement('canvas'), { width: SEG_W, height: SEG_H });
+    const segInCtx = segIn.getContext('2d');
+    const maskCanvas = Object.assign(document.createElement('canvas'), { width: SEG_W, height: SEG_H });
+    const maskCtx = maskCanvas.getContext('2d');
+    const maskImg = maskCtx.createImageData(SEG_W, SEG_H);
+    const personLayer = document.createElement('canvas');
+    const pctx = personLayer.getContext('2d');
+
+    async function loadSegmenter() {
+      try {
+        const v = '0.10.14';
+        const { FilesetResolver, ImageSegmenter } = await import(`https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${v}/vision_bundle.mjs`);
+        const files = await FilesetResolver.forVisionTasks(`https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${v}/wasm`);
+        segmenter = await ImageSegmenter.createFromOptions(files, {
+          baseOptions: {
+            modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite',
+            delegate: 'GPU'
+          },
+          runningMode: 'VIDEO',
+          outputConfidenceMasks: true,
+          outputCategoryMask: false
+        });
+      } catch (err) {
+        console.warn('Person cutout unavailable', err);
+        segmenter = false;
+      }
+    }
+
+    function segmentPerson(nowMs) {
+      if (!segmenter) return;
+      segInCtx.drawImage(video, 0, 0, SEG_W, SEG_H);
+      segmenter.segmentForVideo(segIn, nowMs, res => {
+        const m = res.confidenceMasks && res.confidenceMasks[0];
+        if (!m) return;
+        const conf = m.getAsFloat32Array();
+        if (!segMask) segMask = new Float32Array(conf.length);
+        segMask.set(conf);
+        const d = maskImg.data;
+        for (let i = 0; i < conf.length; i++) {
+          const t = Math.min(1, Math.max(0, (conf[i] - 0.35) / 0.4));
+          d[i * 4] = d[i * 4 + 1] = d[i * 4 + 2] = 255;
+          d[i * 4 + 3] = t * t * (3 - 2 * t) * 255;
+        }
+        maskCtx.putImageData(maskImg, 0, 0);
+      });
+    }
+
+    // How much of a creature's area is covered by you (0..1).
+    function personCoverage(b) {
+      if (!segMask) return 0;
+      const W = canvas.width, H = canvas.height, s = sizeOf(b), c = CREATURES[b.index];
+      let hit = 0, n = 0;
+      for (const fx of [-0.35, 0, 0.35]) for (const fy of [0.2, 0.5, 0.8]) {
+        const x = b.x + fx * s * c.r * 2, y = b.y - s * (c.cy * 2 * fy);
+        n++;
+        if (x < 0 || y < 0 || x >= W || y >= H) continue;
+        if (segMask[Math.floor(y / H * SEG_H) * SEG_W + Math.floor(x / W * SEG_W)] > 0.5) hit++;
+      }
+      return hit / n;
+    }
+
+    function drawPersonOver() {
+      const W = canvas.width, H = canvas.height;
+      if (personLayer.width !== W || personLayer.height !== H) { personLayer.width = W; personLayer.height = H; }
+      pctx.globalCompositeOperation = 'source-over';
+      pctx.clearRect(0, 0, W, H);
+      pctx.drawImage(video, 0, 0, W, H);
+      pctx.globalCompositeOperation = 'destination-in';
+      pctx.drawImage(maskCanvas, 0, 0, W, H);
+      pctx.globalCompositeOperation = 'source-over';
+      ctx.drawImage(personLayer, 0, 0);
+    }
+
     function trackHands(nowMs) {
       if (!hands) return;
       const res = hands.detectForVideo(video, nowMs);
@@ -266,6 +344,9 @@
     const easeOutBack = x => { const c1 = 1.9; return 1 + (c1 + 1) * (x - 1) ** 3 + c1 * (x - 1) ** 2; };
 
     function creatureSize() { return canvas.height * 0.26; }
+    // Depth z: 0 = right in front, 1 = far back. Far creatures are drawn smaller.
+    const DEPTH_SHRINK = 0.42;
+    function sizeOf(b) { return creatureSize() * (1 - DEPTH_SHRINK * b.z); }
 
     function makeBodies(now) {
       const W = canvas.width, H = canvas.height;
@@ -273,15 +354,15 @@
         const x = W * (0.14 + 0.72 * i / (CREATURES.length - 1)), y = H * (0.5 + 0.28 * (i % 2));
         return { index: i, x, y, vx: 0, vy: 0, facing: i % 2 ? 1 : -1, wx: x, wy: y,
                  nextWander: now + 2 + i, coastUntil: 0, wiggle: 0, born: now + 0.3 + i * 0.35, bubbled: false,
-                 sq: 0, sqv: 0, nx: 1, ny: 0, pen: 0 };
+                 sq: 0, sqv: 0, nx: 1, ny: 0, pen: 0,
+                 z: [0.1, 0.8, 0.25, 0.7, 0.35][i % 5], wz: 0.5, vz: 0, behind: i % 2 === 1 };
       });
     }
 
     function hitTest(px, py) {
-      const size = creatureSize();
       let best = null, bestD = Infinity;
       for (const b of bodies) {
-        const c = CREATURES[b.index], cx = b.x, cy = b.y - size * c.cy;
+        const size = sizeOf(b), c = CREATURES[b.index], cx = b.x, cy = b.y - size * c.cy;
         const d = Math.hypot(px - cx, py - cy);
         if (d < size * (c.r + 0.2) && d < bestD) { bestD = d; best = b; }
       }
@@ -296,10 +377,11 @@
       for (let i = 0; i < bodies.length; i++) for (let j = i + 1; j < bodies.length; j++) {
         const a = bodies[i], b = bodies[j];
         if (now < a.born || now < b.born) continue;
-        const ca = CREATURES[a.index], cb = CREATURES[b.index];
-        const ax = a.x, ay = a.y - size * ca.cy, bx = b.x, by = b.y - size * cb.cy;
+        if (Math.abs(a.z - b.z) > 0.3) continue;              // one's in front of the other: they glide past
+        const ca = CREATURES[a.index], cb = CREATURES[b.index], sa = sizeOf(a), sb = sizeOf(b);
+        const ax = a.x, ay = a.y - sa * ca.cy, bx = b.x, by = b.y - sb * cb.cy;
         let dx = bx - ax, dy = by - ay;
-        const d = Math.hypot(dx, dy) || 0.01, reach = size * (ca.r + cb.r);
+        const d = Math.hypot(dx, dy) || 0.01, reach = sa * ca.r + sb * cb.r;
         if (d >= reach) continue;
         dx /= d; dy /= d;
         const pen = reach - d;
@@ -316,8 +398,8 @@
           a.x -= dx * hard * wa / wsum; a.y -= dy * hard * wa / wsum;
           b.x += dx * hard * wb / wsum; b.y += dy * hard * wb / wsum;
         }
-        for (const [o, r] of [[a, ca.r], [b, cb.r]]) {
-          const k = pen / (size * r * 2);
+        for (const [o, r, so] of [[a, ca.r, sa], [b, cb.r, sb]]) {
+          const k = pen / (so * r * 2);
           if (k > o.pen) { o.pen = k; o.nx = dx; o.ny = dy; }
         }
         if (vn < -size * 2.2 && Math.random() < 0.5) spawnBubbles((ax + bx) / 2, (ay + by) / 2 + size * 0.4, size * 0.5, now);
@@ -357,7 +439,7 @@
       if (held && (!hand || !hand.pinched)) {
         held.coastUntil = now + 2.8;       // it keeps your hand's momentum, so you can throw it off the screen
         held.nextWander = held.coastUntil;
-        spawnBubbles(held.x, held.y, size, now);
+        spawnBubbles(held.x, held.y, sizeOf(held), now);
         held = null;
       } else if (!held && hand && hand.pinched && !hand.wasPinched) {
         const b = hitTest(hand.x, hand.y);
@@ -373,7 +455,7 @@
       const minX = size * 0.55, maxX = W - size * 0.55, minY = size * 1.05, maxY = H - size * 0.02;
       collide(size, dt, now);
       for (const b of bodies) {
-        if (!b.bubbled && now >= b.born) { b.bubbled = true; spawnBubbles(b.x, b.y, size, now); }
+        if (!b.bubbled && now >= b.born) { b.bubbled = true; spawnBubbles(b.x, b.y, sizeOf(b), now); }
         if (b === held && !hand.fresh) {
           // hand briefly out of sight (often mid-throw): keep flying at the hand's last speed
           b.x += b.vx * dt;
@@ -391,8 +473,11 @@
           if (!coasting && now > b.nextWander) {
             b.wx = minX + Math.random() * (maxX - minX);
             b.wy = minY + Math.random() * (maxY - minY);
+            b.wz = Math.random() < 0.45 ? 0.65 + Math.random() * 0.35 : Math.random() * 0.35;
             b.nextWander = now + 4 + Math.random() * 5;
           }
+          b.vz = b.vz * Math.exp(-dt * 1.4) + (b.wz - b.z) * 0.5 * dt;
+          b.z = Math.max(0, Math.min(1, b.z + b.vz * dt));
           const drag = Math.exp(-dt * (coasting ? 0.7 : 1.4));
           b.vx *= drag; b.vy *= drag;
           if (!coasting) {
@@ -406,6 +491,18 @@
           // don't let it get lost for good: far off screen, it stops and turns back
           if (b.x < -W || b.x > 2 * W) { b.x = Math.max(-W, Math.min(2 * W, b.x)); b.vx = 0; }
           if (b.y < -H || b.y > 2 * H) { b.y = Math.max(-H, Math.min(2 * H, b.y)); b.vy = 0; }
+        }
+        // Behind you or in front of you. It only switches while it's clear of you,
+        // so nothing ever seems to pass through your head.
+        if (b === held) {
+          b.z += (0 - b.z) * Math.min(1, dt * 6);          // caught: it's in your hand, in front of you
+          b.behind = false;
+        } else {
+          const wantBehind = b.z > 0.5;
+          if (wantBehind !== b.behind) {
+            if (personCoverage(b) < 0.05) b.behind = wantBehind;
+            else b.z = b.behind ? Math.max(b.z, 0.5) : Math.min(b.z, 0.5);   // wait until it's clear
+          }
         }
         // Look the way it's moving; struggle a bit while held.
         if (Math.abs(b.vx) > size * 0.15) b.facing = b.vx > 0 ? -1 : 1;
@@ -423,18 +520,30 @@
 
     function drawCreatures(now) {
       const size = creatureSize();
-      const items = [];
+      const items = [], behindItems = [];
       for (const b of bodies) {
         if (now < b.born) continue;
-        items.push({
-          index: b.index, x: b.x, y: b.y, size, facing: b.facing,
+        (b.behind ? behindItems : items).push({
+          index: b.index, x: b.x, y: b.y, size: sizeOf(b), facing: b.facing,
           z: b === held ? size * 0.3 : 0,          // the one you're holding comes towards you
           squash: { amount: b.sq, nx: b.nx, ny: b.ny },
           scale: easeOutBack(Math.min(1, (now - b.born) / POP_IN)),
           spin: -b.wiggle
         });
       }
-      if (stage3d) stage3d.render(canvas.width, canvas.height, now, items);
+      if (!stage3d) return;
+      const W = canvas.width, H = canvas.height;
+      if (behindItems.length) {
+        // the ones behind you go into the picture first, a little hazy with distance...
+        stage3d.render(W, H, now, behindItems);
+        ctx.save();
+        ctx.filter = 'blur(0.7px) brightness(0.9) saturate(0.85)';
+        ctx.drawImage(glCanvas, 0, 0, W, H);
+        ctx.restore();
+        // ...then you, cut out, on top of them
+        if (segMask) drawPersonOver();
+      }
+      stage3d.render(W, H, now, items);   // and the ones in front of you on top of everything
     }
 
     function drawHud(now) {
@@ -487,6 +596,7 @@
         const dt = Math.min(1 / 30, Math.max(0.001, (nowMs - lastTime) / 1000));   // small steps keep the springy contacts stable
         lastTime = nowMs;
         trackHands(nowMs);
+        segmentPerson(nowMs);
         updateBodies(nowMs / 1000, dt);
         drawCreatures(nowMs / 1000);
         drawHud(nowMs / 1000);
@@ -533,6 +643,7 @@
         setStatus(true, `LIVE · ${s.width}×${s.height}`);
         toggleBtn.textContent = 'Pause';
         if (hands === null) loadHands();
+        if (segmenter === null) loadSegmenter();
         scheduleFrame();
         await listCameras(s.deviceId);
       } catch (err) {
