@@ -211,86 +211,146 @@
     let stream = null;
     let picking = false;
     let key = null;            // sampled hat colour as {h, s, v, css}
-    let target = hexToHsv(PALETTE[0]);
+    let target = null;         // chosen colour in Lab, set by setTarget()
     let faceDetector = null;   // null until loaded; false if it failed
     let faceBox = null;        // smoothed face box in canvas pixels
     let lastFaceSeen = 0;
     let frameCount = 0;
 
-    // ---------- colour helpers ----------
-    function rgbToHsv(r, g, b) {
-      r /= 255; g /= 255; b /= 255;
-      const max = Math.max(r, g, b), min = Math.min(r, g, b), c = max - min;
-      let h = 0;
-      if (c) {
-        if (max === r) h = ((g - b) / c + 6) % 6;
-        else if (max === g) h = (b - r) / c + 2;
-        else h = (r - g) / c + 4;
-      }
-      return { h, s: max ? c / max : 0, v: max };   // h in [0, 6)
+    // ---------- colour science (CIE Lab, D65) ----------
+    // Lab separates lightness from colour, so we can swap the colour while
+    // keeping every bit of the hat's own shading, folds and fabric texture.
+    const LIN = new Float32Array(256);
+    for (let i = 0; i < 256; i++) { const c = i / 255; LIN[i] = c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); }
+    const ENC_N = 4096, ENC = new Uint8ClampedArray(ENC_N + 1);
+    for (let i = 0; i <= ENC_N; i++) { const v = i / ENC_N; ENC[i] = Math.round(255 * (v <= 0.0031308 ? 12.92 * v : 1.055 * Math.pow(v, 1 / 2.4) - 0.055)); }
+    const labF = t => t > 0.008856 ? Math.cbrt(t) : 7.787 * t + 16 / 116;
+    const labInv = t => t > 0.206893 ? t * t * t : (t - 16 / 116) / 7.787;
+    const enc = v => ENC[(v <= 0 ? 0 : v >= 1 ? ENC_N : v * ENC_N) | 0];
+    const clamp = (v, lo, hi) => v < lo ? lo : v > hi ? hi : v;
+    const smooth = (e0, e1, x) => { const t = clamp((x - e0) / (e1 - e0), 0, 1); return t * t * (3 - 2 * t); };
+
+    function rgbToLab(r, g, b) {
+      const R = LIN[r | 0], G = LIN[g | 0], B = LIN[b | 0];
+      const fx = labF((0.4124 * R + 0.3576 * G + 0.1805 * B) / 0.95047);
+      const fy = labF(0.2126 * R + 0.7152 * G + 0.0722 * B);
+      const fz = labF((0.0193 * R + 0.1192 * G + 0.9505 * B) / 1.08883);
+      const L = 116 * fy - 16, a = 500 * (fx - fy), bb = 200 * (fy - fz);
+      return { L, a, b: bb, C: Math.hypot(a, bb) };
     }
-    function hexToHsv(hex) {
+    function hexToLab(hex) {
       const n = parseInt(hex.slice(1), 16);
-      return { ...rgbToHsv(n >> 16, (n >> 8) & 255, n & 255), css: hex };
+      return { ...rgbToLab(n >> 16, (n >> 8) & 255, n & 255), css: hex };
+    }
+
+    // Separable box blur, run twice it approximates a Gaussian.
+    function boxBlur(src, tmp, w, h, r) {
+      const inv = 1 / (2 * r + 1);
+      for (let y = 0; y < h; y++) {
+        const row = y * w;
+        let acc = 0;
+        for (let k = -r; k <= r; k++) acc += src[row + clamp(k, 0, w - 1)];
+        for (let x = 0; x < w; x++) {
+          tmp[row + x] = acc * inv;
+          acc += src[row + Math.min(x + r + 1, w - 1)] - src[row + Math.max(x - r, 0)];
+        }
+      }
+      for (let x = 0; x < w; x++) {
+        let acc = 0;
+        for (let k = -r; k <= r; k++) acc += tmp[clamp(k, 0, h - 1) * w + x];
+        for (let y = 0; y < h; y++) {
+          src[y * w + x] = acc * inv;
+          acc += tmp[Math.min(y + r + 1, h - 1) * w + x] - tmp[Math.max(y - r, 0) * w + x];
+        }
+      }
     }
 
     // ---------- the recolour pass ----------
-    function recolour(img, x0, y0, x1, y1) {
-      const d = img.data, W = img.width;
+    let bufLen = 0, Ls, As, Bs, M, T;
+    let maskPrev = new Float32Array(0), maskCur = new Float32Array(0);
+
+    function recolour(img, ox, oy, fullW, fullH) {
+      const d = img.data, w = img.width, h = img.height, n = w * h;
+      if (n > bufLen) {
+        bufLen = n;
+        Ls = new Float32Array(n); As = new Float32Array(n); Bs = new Float32Array(n);
+        M = new Float32Array(n); T = new Float32Array(n);
+      }
+      if (maskCur.length !== fullW * fullH) {
+        maskPrev = new Float32Array(fullW * fullH);
+        maskCur = new Float32Array(fullW * fullH);
+      }
+
       const t = tolerance.value / 100;
-      const chromatic = key.s > 0.22 && key.v > 0.12;
-      const hueTol = 0.15 + t * 1.2;          // hue units (6 = full circle)
-      const satMin = Math.max(0.08, key.s * (0.55 - t * 0.35));
-      const valTol = 0.06 + t * 0.35;
-      const neutralSatMax = 0.12 + t * 0.25;
-      const kv = Math.max(key.v, 0.04);
-      const th = target.h, ts = target.s, tv = target.v;
+      const chromatic = key.C > 12;
+      const ang = (14 + t * 46) * Math.PI / 180;
+      const cosLo = Math.cos(ang), cosHi = Math.cos(ang * 0.5);
+      const cMin = Math.max(4, key.C * (0.35 - 0.2 * t));
+      const nC = 7 + t * 14, nL = 10 + t * 30;
+      const kx = chromatic ? key.a / key.C : 0, ky = chromatic ? key.b / key.C : 0;
 
-      for (let y = y0; y < y1; y++) {
-        let i = (y * W + x0) * 4;
-        for (let x = x0; x < x1; x++, i += 4) {
-          const r = d[i], g = d[i + 1], b = d[i + 2];
-          const max = r > g ? (r > b ? r : b) : (g > b ? g : b);
-          const min = r < g ? (r < b ? r : b) : (g < b ? g : b);
-          const v = max / 255, c = max - min, s = max ? c / max : 0;
-
-          let m;
-          if (chromatic) {
-            if (s < satMin || v < 0.06) continue;
-            let h;
-            if (max === r) h = ((g - b) / c + 6) % 6;
-            else if (max === g) h = (b - r) / c + 2;
-            else h = (r - g) / c + 4;
-            let dh = Math.abs(h - key.h);
-            if (dh > 3) dh = 6 - dh;
-            m = 1 - dh / hueTol;
-          } else {
-            if (s > neutralSatMax) continue;
-            m = 1 - Math.abs(v - key.v) / valTol;
-          }
-          if (m <= 0) continue;
-          const a = m > 0.5 ? 1 : m * 2;       // soft edge
-
-          // Keep the pixel's shading relative to the hat's base colour.
-          let nv = tv * (v / kv);
-          if (tv < 0.15) nv = tv + (v - key.v) * 0.6;   // darkening to black: keep some folds visible
-          nv = nv < 0 ? 0 : nv > 1 ? 1 : nv;
-          const ns = chromatic ? Math.min(1, ts * Math.min(1.2, s / key.s)) : ts;
-
-          // HSV -> RGB
-          const cc = nv * ns, hh = th, xx = cc * (1 - Math.abs((hh % 2) - 1)), mm = nv - cc;
-          let rr, gg, bb;
-          if (hh < 1) { rr = cc; gg = xx; bb = 0; }
-          else if (hh < 2) { rr = xx; gg = cc; bb = 0; }
-          else if (hh < 3) { rr = 0; gg = cc; bb = xx; }
-          else if (hh < 4) { rr = 0; gg = xx; bb = cc; }
-          else if (hh < 5) { rr = xx; gg = 0; bb = cc; }
-          else { rr = cc; gg = 0; bb = xx; }
-          d[i]     = r + ((rr + mm) * 255 - r) * a;
-          d[i + 1] = g + ((gg + mm) * 255 - g) * a;
-          d[i + 2] = b + ((bb + mm) * 255 - b) * a;
+      // 1. Convert to Lab and score how "hat-like" each pixel is (0..1, soft).
+      for (let p = 0, i = 0; p < n; p++, i += 4) {
+        const R = LIN[d[i]], G = LIN[d[i + 1]], B = LIN[d[i + 2]];
+        const fx = labF((0.4124 * R + 0.3576 * G + 0.1805 * B) / 0.95047);
+        const fy = labF(0.2126 * R + 0.7152 * G + 0.0722 * B);
+        const fz = labF((0.0193 * R + 0.1192 * G + 0.9505 * B) / 1.08883);
+        const L = 116 * fy - 16, a = 500 * (fx - fy), b = 200 * (fy - fz);
+        Ls[p] = L; As[p] = a; Bs[p] = b;
+        const C = Math.sqrt(a * a + b * b);
+        if (chromatic) {
+          // Same hue direction, and colourful enough. Lightness barely matters, so shadows still count.
+          M[p] = C < 1e-3 ? 0 : smooth(cosLo, cosHi, (a * kx + b * ky) / C) * smooth(cMin * 0.6, cMin, C);
+        } else {
+          M[p] = (1 - smooth(nC * 0.6, nC, C)) * (1 - smooth(nL * 0.6, nL, Math.abs(L - key.L)));
         }
       }
+
+      // 2. Blur the mask: removes speckle from camera noise and gives a soft, natural edge.
+      const r = Math.max(1, Math.round(fullW / 360));
+      boxBlur(M, T, w, h, r);
+      boxBlur(M, T, w, h, r);
+
+      // 3. Shape the mask, fade it at the head-area border, smooth it over time, then recolour.
+      const feather = Math.max(6, Math.round(Math.min(w, h) * 0.12));
+      const fl = ox > 0, ft = oy > 0, fr = ox + w < fullW, fb = oy + h < fullH;
+      // Pure black/white leave no room for shading, so aim slightly inside the range.
+      const tL = clamp(target.L, 14, 93), ta = target.a, tb = target.b, kL = key.L, kC = key.C;
+      const gain = clamp((tL + 15) / (kL + 15), 0.6, 1.5);
+      maskCur.fill(0);
+
+      for (let y = 0; y < h; y++) {
+        let ey = 1;
+        if (ft && y < feather) ey = y / feather;
+        if (fb && h - 1 - y < feather) ey = Math.min(ey, (h - 1 - y) / feather);
+        for (let x = 0; x < w; x++) {
+          const p = y * w + x;
+          let m = smooth(0.18, 0.65, M[p]) * ey;
+          if (fl && x < feather) m *= x / feather;
+          if (fr && w - 1 - x < feather) m *= (w - 1 - x) / feather;
+          const q = (oy + y) * fullW + ox + x;
+          m = maskPrev[q] * 0.4 + m * 0.6;          // temporal smoothing: no flicker
+          maskCur[q] = m;
+          if (m < 0.004) continue;
+
+          // Keep the pixel's own lightness detail (texture, folds, lighting), shifted to the new colour's lightness.
+          const L = Ls[p];
+          let Lo = tL + (L - kL) * gain;
+          if (Lo < 10) Lo = 10 * Math.exp((Lo - 10) / 10);            // soft floor keeps detail in deep shadow
+          else if (Lo > 96) Lo = 100 - 4 * Math.exp((96 - Lo) / 4);   // soft ceiling keeps highlights
+          // Colourfulness follows the original: shadows and highlights on the hat stay less saturated.
+          const f = chromatic
+            ? Math.min(1.35, Math.sqrt(As[p] * As[p] + Bs[p] * Bs[p]) / kC)
+            : clamp(Lo / Math.max(tL, 1), 0, 1.15);
+          const fy = (Lo + 16) / 116, fx = fy + ta * f / 500, fz = fy - tb * f / 200;
+          const X = 0.95047 * labInv(fx), Y = labInv(fy), Z = 1.08883 * labInv(fz);
+          const i = p * 4;
+          d[i]     += (enc( 3.2406 * X - 1.5372 * Y - 0.4986 * Z) - d[i])     * m;
+          d[i + 1] += (enc(-0.9689 * X + 1.8758 * Y + 0.0415 * Z) - d[i + 1]) * m;
+          d[i + 2] += (enc( 0.0557 * X - 0.2040 * Y + 1.0570 * Z) - d[i + 2]) * m;
+        }
+      }
+      [maskPrev, maskCur] = [maskCur, maskPrev];
     }
 
     // ---------- face detection (limits the effect to the head area) ----------
@@ -338,10 +398,10 @@
       if (!faceBox || performance.now() - lastFaceSeen > 800) return null;
       const { x, y, w, h } = faceBox;
       return [
-        Math.max(0, Math.floor(x - w * 0.6)),
-        Math.max(0, Math.floor(y - h * 1.3)),
-        Math.min(W, Math.ceil(x + w * 1.6)),
-        Math.min(H, Math.ceil(y + h * 0.2))
+        Math.max(0, Math.floor(x - w * 0.8)),
+        Math.max(0, Math.floor(y - h * 1.5)),
+        Math.min(W, Math.ceil(x + w * 1.8)),
+        Math.min(H, Math.ceil(y + h * 0.3))
       ];
     }
 
@@ -361,7 +421,7 @@
             const [x0, y0, x1, y1] = region;
             if (x1 > x0 && y1 > y0) {
               const img = ctx.getImageData(x0, y0, x1 - x0, y1 - y0);
-              recolour(img, 0, 0, img.width, img.height);
+              recolour(img, x0, y0, canvas.width, canvas.height);
               ctx.putImageData(img, x0, y0);
             }
           }
@@ -404,12 +464,12 @@
 
       // Sample the raw frame (not the recoloured one), averaging a small patch.
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      const r = 4, x0 = Math.max(0, cx - r), y0 = Math.max(0, cy - r);
+      const r = 6, x0 = Math.max(0, cx - r), y0 = Math.max(0, cy - r);
       const patch = ctx.getImageData(x0, y0, Math.min(canvas.width - x0, r * 2 + 1), Math.min(canvas.height - y0, r * 2 + 1)).data;
       let R = 0, G = 0, B = 0, n = 0;
       for (let i = 0; i < patch.length; i += 4) { R += patch[i]; G += patch[i + 1]; B += patch[i + 2]; n++; }
       R /= n; G /= n; B /= n;
-      key = { ...rgbToHsv(R, G, B), css: `rgb(${R | 0}, ${G | 0}, ${B | 0})` };
+      key = { ...rgbToLab(R, G, B), css: `rgb(${R | 0}, ${G | 0}, ${B | 0})` };
       sampleChip.style.background = key.css;
 
       picking = false;
@@ -422,7 +482,7 @@
 
     // ---------- target colour ----------
     function setTarget(hex) {
-      target = hexToHsv(hex);
+      target = hexToLab(hex);
       customColor.value = hex;
       for (const b of swatchesEl.children) b.setAttribute('aria-pressed', String(b.dataset.color === hex));
     }
