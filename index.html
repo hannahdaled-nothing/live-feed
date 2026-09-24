@@ -36,8 +36,9 @@
       padding: 24px 16px;
       gap: 16px;
     }
-    header, .controls, .hat, .stage { width: 100%; max-width: 960px; }
     header {
+      width: 100%;
+      max-width: 960px;
       display: flex;
       align-items: center;
       justify-content: space-between;
@@ -45,25 +46,25 @@
       flex-wrap: wrap;
     }
     h1 { font-size: 20px; margin: 0; font-weight: 600; }
-    h2 { font-size: 15px; margin: 0; font-weight: 600; }
     .status { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
     .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); }
     .live .dot { background: var(--accent); animation: pulse 1.4s infinite; }
     .live { color: var(--text); }
     @keyframes pulse { 50% { opacity: .35; } }
     .stage {
+      width: 100%;
+      max-width: 960px;
       aspect-ratio: 16 / 9;
       background: #000;
       border: 1px solid var(--border);
       border-radius: 12px;
       overflow: hidden;
       position: relative;
+      display: grid;
+      place-items: center;
     }
-    /* The video only feeds the canvas; it stays in the DOM so every browser keeps decoding it. */
-    video { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
-    canvas { width: 100%; height: 100%; object-fit: contain; display: block; }
-    canvas.mirror { transform: scaleX(-1); }
-    canvas.picking { cursor: crosshair; }
+    video { width: 100%; height: 100%; object-fit: contain; }
+    video.mirror { transform: scaleX(-1); }
     .message {
       position: absolute;
       inset: 0;
@@ -73,20 +74,9 @@
       text-align: center;
       color: #ccc;
     }
-    .banner {
-      position: absolute;
-      left: 50%;
-      top: 12px;
-      transform: translateX(-50%);
-      background: rgba(0, 0, 0, .7);
-      color: #fff;
-      padding: 6px 14px;
-      border-radius: 999px;
-      font-size: 13px;
-      pointer-events: none;
-      white-space: nowrap;
-    }
     .controls {
+      width: 100%;
+      max-width: 960px;
       display: flex;
       gap: 10px;
       flex-wrap: wrap;
@@ -101,38 +91,9 @@
       color: var(--text);
       cursor: pointer;
     }
-    button.primary { background: var(--text); color: var(--bg); border-color: var(--text); }
     select { max-width: 100%; }
     button:hover { border-color: var(--muted); }
     .clock { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; font-size: 13px; }
-
-    .hat {
-      background: var(--panel);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 16px;
-      display: grid;
-      gap: 14px;
-    }
-    .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-    .label { color: var(--muted); font-size: 13px; min-width: 88px; }
-    .chip {
-      width: 28px; height: 28px; border-radius: 50%;
-      border: 1px solid var(--border);
-      background: repeating-conic-gradient(#ccc 0 25%, #fff 0 50%) 0 0 / 10px 10px;
-    }
-    .swatches { display: flex; gap: 8px; flex-wrap: wrap; }
-    .swatch {
-      width: 34px; height: 34px; padding: 0; border-radius: 50%;
-      border: 2px solid transparent;
-      box-shadow: inset 0 0 0 1px rgba(0,0,0,.15);
-    }
-    .swatch[aria-pressed="true"] { border-color: var(--text); box-shadow: inset 0 0 0 2px var(--panel); }
-    input[type=color] {
-      width: 34px; height: 34px; padding: 0; border: none; background: none; cursor: pointer;
-    }
-    input[type=range] { flex: 1; min-width: 140px; max-width: 320px; }
-    .hint { color: var(--muted); font-size: 13px; margin: 0; }
   </style>
 </head>
 <body>
@@ -142,10 +103,8 @@
   </header>
 
   <div class="stage">
-    <video id="video" autoplay playsinline muted></video>
-    <canvas id="canvas" class="mirror"></canvas>
+    <video id="video" class="mirror" autoplay playsinline muted></video>
     <div class="message" id="message">Requesting camera access…</div>
-    <div class="banner" id="banner" hidden></div>
   </div>
 
   <div class="controls">
@@ -156,352 +115,17 @@
     <span class="clock" id="clock"></span>
   </div>
 
-  <section class="hat">
-    <div class="row">
-      <h2>Hat colour</h2>
-      <label class="row" style="margin-left:auto"><input type="checkbox" id="effectOn" checked> Effect on</label>
-    </div>
-    <div class="row">
-      <span class="label">1. Your hat</span>
-      <span class="chip" id="sampleChip" title="Sampled hat colour"></span>
-      <button id="pickBtn" class="primary">Tap your hat in the video</button>
-    </div>
-    <div class="row">
-      <span class="label">2. New colour</span>
-      <div class="swatches" id="swatches"></div>
-      <input type="color" id="customColor" value="#e63946" aria-label="Custom colour">
-    </div>
-    <div class="row">
-      <span class="label">Sensitivity</span>
-      <input type="range" id="tolerance" min="0" max="100" value="40">
-      <span class="hint" id="tolValue">40</span>
-    </div>
-    <div class="row">
-      <label class="row"><input type="checkbox" id="headOnly" checked> Only change colours around my head</label>
-      <span class="hint" id="faceStatus"></span>
-    </div>
-    <p class="hint">Tip: if patches of the hat stay the original colour, raise the sensitivity. If your hair or the background changes too, lower it.</p>
-  </section>
-
-  <script type="module">
+  <script>
     const video = document.getElementById('video');
-    const canvas = document.getElementById('canvas');
-    const ctx = canvas.getContext('2d', { willReadFrequently: true });
     const message = document.getElementById('message');
-    const banner = document.getElementById('banner');
     const statusEl = document.getElementById('status');
     const statusText = document.getElementById('statusText');
     const cameraSelect = document.getElementById('cameraSelect');
     const toggleBtn = document.getElementById('toggleBtn');
     const mirrorBtn = document.getElementById('mirrorBtn');
     const snapBtn = document.getElementById('snapBtn');
-    const pickBtn = document.getElementById('pickBtn');
-    const sampleChip = document.getElementById('sampleChip');
-    const swatchesEl = document.getElementById('swatches');
-    const customColor = document.getElementById('customColor');
-    const tolerance = document.getElementById('tolerance');
-    const tolValue = document.getElementById('tolValue');
-    const effectOn = document.getElementById('effectOn');
-    const headOnly = document.getElementById('headOnly');
-    const faceStatus = document.getElementById('faceStatus');
-
-    const MAX_WIDTH = 1280;
-    const PALETTE = ['#e63946', '#f77f00', '#fcbf49', '#2a9d8f', '#06d6a0', '#118ab2', '#3a0ca3', '#9d4edd', '#ff5d8f', '#6f4e37', '#ffffff', '#111111'];
-
     let stream = null;
-    let picking = false;
-    let key = null;            // sampled hat colour as {h, s, v, css}
-    let target = null;         // chosen colour in Lab, set by setTarget()
-    let faceDetector = null;   // null until loaded; false if it failed
-    let faceBox = null;        // smoothed face box in canvas pixels
-    let lastFaceSeen = 0;
-    let frameCount = 0;
 
-    // ---------- colour science (CIE Lab, D65) ----------
-    // Lab separates lightness from colour, so we can swap the colour while
-    // keeping every bit of the hat's own shading, folds and fabric texture.
-    const LIN = new Float32Array(256);
-    for (let i = 0; i < 256; i++) { const c = i / 255; LIN[i] = c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); }
-    const ENC_N = 4096, ENC = new Uint8ClampedArray(ENC_N + 1);
-    for (let i = 0; i <= ENC_N; i++) { const v = i / ENC_N; ENC[i] = Math.round(255 * (v <= 0.0031308 ? 12.92 * v : 1.055 * Math.pow(v, 1 / 2.4) - 0.055)); }
-    const labF = t => t > 0.008856 ? Math.cbrt(t) : 7.787 * t + 16 / 116;
-    const labInv = t => t > 0.206893 ? t * t * t : (t - 16 / 116) / 7.787;
-    const enc = v => ENC[(v <= 0 ? 0 : v >= 1 ? ENC_N : v * ENC_N) | 0];
-    const clamp = (v, lo, hi) => v < lo ? lo : v > hi ? hi : v;
-    const smooth = (e0, e1, x) => { const t = clamp((x - e0) / (e1 - e0), 0, 1); return t * t * (3 - 2 * t); };
-
-    function rgbToLab(r, g, b) {
-      const R = LIN[r | 0], G = LIN[g | 0], B = LIN[b | 0];
-      const fx = labF((0.4124 * R + 0.3576 * G + 0.1805 * B) / 0.95047);
-      const fy = labF(0.2126 * R + 0.7152 * G + 0.0722 * B);
-      const fz = labF((0.0193 * R + 0.1192 * G + 0.9505 * B) / 1.08883);
-      const L = 116 * fy - 16, a = 500 * (fx - fy), bb = 200 * (fy - fz);
-      return { L, a, b: bb, C: Math.hypot(a, bb) };
-    }
-    function hexToLab(hex) {
-      const n = parseInt(hex.slice(1), 16);
-      return { ...rgbToLab(n >> 16, (n >> 8) & 255, n & 255), css: hex };
-    }
-
-    // Separable box blur, run twice it approximates a Gaussian.
-    function boxBlur(src, tmp, w, h, r) {
-      const inv = 1 / (2 * r + 1);
-      for (let y = 0; y < h; y++) {
-        const row = y * w;
-        let acc = 0;
-        for (let k = -r; k <= r; k++) acc += src[row + clamp(k, 0, w - 1)];
-        for (let x = 0; x < w; x++) {
-          tmp[row + x] = acc * inv;
-          acc += src[row + Math.min(x + r + 1, w - 1)] - src[row + Math.max(x - r, 0)];
-        }
-      }
-      for (let x = 0; x < w; x++) {
-        let acc = 0;
-        for (let k = -r; k <= r; k++) acc += tmp[clamp(k, 0, h - 1) * w + x];
-        for (let y = 0; y < h; y++) {
-          src[y * w + x] = acc * inv;
-          acc += tmp[Math.min(y + r + 1, h - 1) * w + x] - tmp[Math.max(y - r, 0) * w + x];
-        }
-      }
-    }
-
-    // ---------- the recolour pass ----------
-    let bufLen = 0, Ls, As, Bs, M, T;
-    let maskPrev = new Float32Array(0), maskCur = new Float32Array(0);
-
-    function recolour(img, ox, oy, fullW, fullH) {
-      const d = img.data, w = img.width, h = img.height, n = w * h;
-      if (n > bufLen) {
-        bufLen = n;
-        Ls = new Float32Array(n); As = new Float32Array(n); Bs = new Float32Array(n);
-        M = new Float32Array(n); T = new Float32Array(n);
-      }
-      if (maskCur.length !== fullW * fullH) {
-        maskPrev = new Float32Array(fullW * fullH);
-        maskCur = new Float32Array(fullW * fullH);
-      }
-
-      const t = tolerance.value / 100;
-      const chromatic = key.C > 12;
-      const ang = (14 + t * 46) * Math.PI / 180;
-      const cosLo = Math.cos(ang), cosHi = Math.cos(ang * 0.5);
-      const cMin = Math.max(4, key.C * (0.35 - 0.2 * t));
-      const nC = 7 + t * 14, nL = 10 + t * 30;
-      const kx = chromatic ? key.a / key.C : 0, ky = chromatic ? key.b / key.C : 0;
-
-      // 1. Convert to Lab and score how "hat-like" each pixel is (0..1, soft).
-      for (let p = 0, i = 0; p < n; p++, i += 4) {
-        const R = LIN[d[i]], G = LIN[d[i + 1]], B = LIN[d[i + 2]];
-        const fx = labF((0.4124 * R + 0.3576 * G + 0.1805 * B) / 0.95047);
-        const fy = labF(0.2126 * R + 0.7152 * G + 0.0722 * B);
-        const fz = labF((0.0193 * R + 0.1192 * G + 0.9505 * B) / 1.08883);
-        const L = 116 * fy - 16, a = 500 * (fx - fy), b = 200 * (fy - fz);
-        Ls[p] = L; As[p] = a; Bs[p] = b;
-        const C = Math.sqrt(a * a + b * b);
-        if (chromatic) {
-          // Same hue direction, and colourful enough. Lightness barely matters, so shadows still count.
-          M[p] = C < 1e-3 ? 0 : smooth(cosLo, cosHi, (a * kx + b * ky) / C) * smooth(cMin * 0.6, cMin, C);
-        } else {
-          M[p] = (1 - smooth(nC * 0.6, nC, C)) * (1 - smooth(nL * 0.6, nL, Math.abs(L - key.L)));
-        }
-      }
-
-      // 2. Blur the mask: removes speckle from camera noise and gives a soft, natural edge.
-      const r = Math.max(1, Math.round(fullW / 360));
-      boxBlur(M, T, w, h, r);
-      boxBlur(M, T, w, h, r);
-
-      // 3. Shape the mask, fade it at the head-area border, smooth it over time, then recolour.
-      const feather = Math.max(6, Math.round(Math.min(w, h) * 0.12));
-      const fl = ox > 0, ft = oy > 0, fr = ox + w < fullW, fb = oy + h < fullH;
-      // Pure black/white leave no room for shading, so aim slightly inside the range.
-      const tL = clamp(target.L, 14, 93), ta = target.a, tb = target.b, kL = key.L, kC = key.C;
-      const gain = clamp((tL + 15) / (kL + 15), 0.6, 1.5);
-      maskCur.fill(0);
-
-      for (let y = 0; y < h; y++) {
-        let ey = 1;
-        if (ft && y < feather) ey = y / feather;
-        if (fb && h - 1 - y < feather) ey = Math.min(ey, (h - 1 - y) / feather);
-        for (let x = 0; x < w; x++) {
-          const p = y * w + x;
-          let m = smooth(0.18, 0.65, M[p]) * ey;
-          if (fl && x < feather) m *= x / feather;
-          if (fr && w - 1 - x < feather) m *= (w - 1 - x) / feather;
-          const q = (oy + y) * fullW + ox + x;
-          m = maskPrev[q] * 0.4 + m * 0.6;          // temporal smoothing: no flicker
-          maskCur[q] = m;
-          if (m < 0.004) continue;
-
-          // Keep the pixel's own lightness detail (texture, folds, lighting), shifted to the new colour's lightness.
-          const L = Ls[p];
-          let Lo = tL + (L - kL) * gain;
-          if (Lo < 10) Lo = 10 * Math.exp((Lo - 10) / 10);            // soft floor keeps detail in deep shadow
-          else if (Lo > 96) Lo = 100 - 4 * Math.exp((96 - Lo) / 4);   // soft ceiling keeps highlights
-          // Colourfulness follows the original: shadows and highlights on the hat stay less saturated.
-          const f = chromatic
-            ? Math.min(1.35, Math.sqrt(As[p] * As[p] + Bs[p] * Bs[p]) / kC)
-            : clamp(Lo / Math.max(tL, 1), 0, 1.15);
-          const fy = (Lo + 16) / 116, fx = fy + ta * f / 500, fz = fy - tb * f / 200;
-          const X = 0.95047 * labInv(fx), Y = labInv(fy), Z = 1.08883 * labInv(fz);
-          const i = p * 4;
-          d[i]     += (enc( 3.2406 * X - 1.5372 * Y - 0.4986 * Z) - d[i])     * m;
-          d[i + 1] += (enc(-0.9689 * X + 1.8758 * Y + 0.0415 * Z) - d[i + 1]) * m;
-          d[i + 2] += (enc( 0.0557 * X - 0.2040 * Y + 1.0570 * Z) - d[i + 2]) * m;
-        }
-      }
-      [maskPrev, maskCur] = [maskCur, maskPrev];
-    }
-
-    // ---------- face detection (limits the effect to the head area) ----------
-    async function loadFaceDetector() {
-      faceStatus.textContent = 'Loading head tracker…';
-      try {
-        const v = '0.10.14';
-        const { FilesetResolver, FaceDetector } = await import(`https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${v}/vision_bundle.mjs`);
-        const files = await FilesetResolver.forVisionTasks(`https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${v}/wasm`);
-        faceDetector = await FaceDetector.createFromOptions(files, {
-          baseOptions: {
-            modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite',
-            delegate: 'GPU'
-          },
-          runningMode: 'VIDEO',
-          minDetectionConfidence: 0.5
-        });
-        faceStatus.textContent = '';
-      } catch (err) {
-        console.warn('Face detector unavailable', err);
-        faceDetector = false;
-        faceStatus.textContent = 'Head tracker unavailable, so the whole picture will be recoloured.';
-      }
-    }
-
-    function updateFace(now) {
-      if (!faceDetector || frameCount % 2) return;   // every other frame is plenty
-      const res = faceDetector.detectForVideo(video, now);
-      const det = res.detections?.[0];
-      if (!det) return;
-      const sx = canvas.width / video.videoWidth;
-      const bb = det.boundingBox;
-      const box = { x: bb.originX * sx, y: bb.originY * sx, w: bb.width * sx, h: bb.height * sx };
-      faceBox = faceBox
-        ? { x: lerp(faceBox.x, box.x), y: lerp(faceBox.y, box.y), w: lerp(faceBox.w, box.w), h: lerp(faceBox.h, box.h) }
-        : box;
-      lastFaceSeen = now;
-    }
-    const lerp = (a, b) => a + (b - a) * 0.5;
-
-    // Where a hat can be relative to the face: wide, and well above the eyebrows.
-    function hatRegion() {
-      const W = canvas.width, H = canvas.height;
-      if (!headOnly.checked || faceDetector === false) return [0, 0, W, H];
-      if (!faceBox || performance.now() - lastFaceSeen > 800) return null;
-      const { x, y, w, h } = faceBox;
-      return [
-        Math.max(0, Math.floor(x - w * 0.8)),
-        Math.max(0, Math.floor(y - h * 1.5)),
-        Math.min(W, Math.ceil(x + w * 1.8)),
-        Math.min(H, Math.ceil(y + h * 0.3))
-      ];
-    }
-
-    // ---------- render loop ----------
-    function renderFrame(now) {
-      if (!stream) return;
-      if (video.readyState >= 2 && video.videoWidth) {
-        const scale = Math.min(1, MAX_WIDTH / video.videoWidth);
-        const w = Math.round(video.videoWidth * scale), h = Math.round(video.videoHeight * scale);
-        if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
-        ctx.drawImage(video, 0, 0, w, h);
-
-        if (effectOn.checked && key) {
-          updateFace(performance.now());
-          const region = hatRegion();
-          if (region) {
-            const [x0, y0, x1, y1] = region;
-            if (x1 > x0 && y1 > y0) {
-              const img = ctx.getImageData(x0, y0, x1 - x0, y1 - y0);
-              recolour(img, x0, y0, canvas.width, canvas.height);
-              ctx.putImageData(img, x0, y0);
-            }
-          }
-          showBanner(region || faceDetector === null ? '' : 'Looking for your face…');
-        } else if (!picking) {
-          showBanner('');
-        }
-        frameCount++;
-      }
-      scheduleFrame();
-    }
-    function scheduleFrame() {
-      if ('requestVideoFrameCallback' in video) video.requestVideoFrameCallback(renderFrame);
-      else requestAnimationFrame(renderFrame);
-    }
-    function showBanner(text) {
-      if (picking) text = 'Tap on your hat';
-      banner.hidden = !text;
-      banner.textContent = text;
-    }
-
-    // ---------- picking the hat colour ----------
-    pickBtn.addEventListener('click', () => {
-      if (!stream) return;
-      picking = !picking;
-      canvas.classList.toggle('picking', picking);
-      pickBtn.textContent = picking ? 'Cancel' : 'Re-pick hat colour';
-      showBanner('');
-    });
-
-    canvas.addEventListener('click', e => {
-      if (!picking) return;
-      const rect = canvas.getBoundingClientRect();
-      const s = Math.min(rect.width / canvas.width, rect.height / canvas.height);
-      const offX = (rect.width - canvas.width * s) / 2, offY = (rect.height - canvas.height * s) / 2;
-      let px = e.clientX - rect.left;
-      if (canvas.classList.contains('mirror')) px = rect.width - px;
-      const cx = Math.round((px - offX) / s), cy = Math.round((e.clientY - rect.top - offY) / s);
-      if (cx < 0 || cy < 0 || cx >= canvas.width || cy >= canvas.height) return;
-
-      // Sample the raw frame (not the recoloured one), averaging a small patch.
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      const r = 6, x0 = Math.max(0, cx - r), y0 = Math.max(0, cy - r);
-      const patch = ctx.getImageData(x0, y0, Math.min(canvas.width - x0, r * 2 + 1), Math.min(canvas.height - y0, r * 2 + 1)).data;
-      let R = 0, G = 0, B = 0, n = 0;
-      for (let i = 0; i < patch.length; i += 4) { R += patch[i]; G += patch[i + 1]; B += patch[i + 2]; n++; }
-      R /= n; G /= n; B /= n;
-      key = { ...rgbToLab(R, G, B), css: `rgb(${R | 0}, ${G | 0}, ${B | 0})` };
-      sampleChip.style.background = key.css;
-
-      picking = false;
-      canvas.classList.remove('picking');
-      pickBtn.textContent = 'Re-pick hat colour';
-      pickBtn.classList.remove('primary');
-      showBanner('');
-      if (faceDetector === null) loadFaceDetector();
-    });
-
-    // ---------- target colour ----------
-    function setTarget(hex) {
-      target = hexToLab(hex);
-      customColor.value = hex;
-      for (const b of swatchesEl.children) b.setAttribute('aria-pressed', String(b.dataset.color === hex));
-    }
-    for (const hex of PALETTE) {
-      const b = document.createElement('button');
-      b.className = 'swatch';
-      b.style.background = hex;
-      b.dataset.color = hex;
-      b.setAttribute('aria-label', `Colour ${hex}`);
-      b.addEventListener('click', () => setTarget(hex));
-      swatchesEl.appendChild(b);
-    }
-    customColor.addEventListener('input', () => setTarget(customColor.value));
-    setTarget(PALETTE[0]);
-
-    tolerance.addEventListener('input', () => { tolValue.textContent = tolerance.value; });
-    headOnly.addEventListener('change', () => { if (headOnly.checked && faceDetector === null) loadFaceDetector(); });
-
-    // ---------- camera ----------
     function setStatus(live, text) {
       statusEl.classList.toggle('live', live);
       statusText.textContent = text;
@@ -511,7 +135,6 @@
       if (stream) stream.getTracks().forEach(t => t.stop());
       stream = null;
       video.srcObject = null;
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
     }
 
     async function start(deviceId) {
@@ -519,21 +142,19 @@
       message.hidden = false;
       message.textContent = 'Requesting camera access…';
       try {
-        const size = { width: { ideal: 1280 }, height: { ideal: 720 } };
         stream = await navigator.mediaDevices.getUserMedia({
-          video: deviceId ? { deviceId: { exact: deviceId }, ...size } : size,
+          video: deviceId ? { deviceId: { exact: deviceId }, width: { ideal: 1920 }, height: { ideal: 1080 } }
+                          : { width: { ideal: 1920 }, height: { ideal: 1080 } },
           audio: false
         });
         video.srcObject = stream;
-        await video.play().catch(() => {});
         message.hidden = true;
-        const s = stream.getVideoTracks()[0].getSettings();
+        const track = stream.getVideoTracks()[0];
+        const s = track.getSettings();
         setStatus(true, `LIVE · ${s.width}×${s.height}`);
         toggleBtn.textContent = 'Pause';
-        scheduleFrame();
         await listCameras(s.deviceId);
       } catch (err) {
-        stream = null;
         setStatus(false, 'Offline');
         message.textContent = err.name === 'NotAllowedError'
           ? 'Camera access was denied. Allow camera access for this page in your browser (and in System Settings → Privacy & Security → Camera), then reload.'
@@ -569,21 +190,24 @@
     });
 
     mirrorBtn.addEventListener('click', () => {
-      const on = canvas.classList.toggle('mirror');
+      const on = video.classList.toggle('mirror');
       mirrorBtn.textContent = `Mirror: ${on ? 'on' : 'off'}`;
     });
 
     snapBtn.addEventListener('click', () => {
       if (!stream) return;
-      const out = document.createElement('canvas');
-      out.width = canvas.width;
-      out.height = canvas.height;
-      const o = out.getContext('2d');
-      if (canvas.classList.contains('mirror')) { o.translate(out.width, 0); o.scale(-1, 1); }
-      o.drawImage(canvas, 0, 0);   // includes the hat recolour
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const ctx = canvas.getContext('2d');
+      if (video.classList.contains('mirror')) {
+        ctx.translate(canvas.width, 0);
+        ctx.scale(-1, 1);
+      }
+      ctx.drawImage(video, 0, 0);
       const a = document.createElement('a');
       a.download = `snapshot-${new Date().toISOString().replace(/[:.]/g, '-')}.png`;
-      a.href = out.toDataURL('image/png');
+      a.href = canvas.toDataURL('image/png');
       a.click();
     });
 
@@ -591,7 +215,7 @@
 
     if (!navigator.mediaDevices?.getUserMedia) {
       setStatus(false, 'Unsupported');
-      message.textContent = 'This browser does not support camera access. Open the page over https:// or http://localhost in Chrome, Safari, or Firefox.';
+      message.textContent = 'This browser does not support camera access. Open the page at http://localhost:8000 in Chrome, Safari, or Firefox.';
     } else {
       start();
     }
