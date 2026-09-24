@@ -12,6 +12,8 @@
       --muted: #6b6b6b;
       --border: #dcdcd8;
       --accent: #d7263d;
+      --abyss: #0b1d3a;
+      --glow: #4cc9ff;
     }
     @media (prefers-color-scheme: dark) {
       :root {
@@ -36,9 +38,8 @@
       padding: 24px 16px;
       gap: 16px;
     }
+    header, .controls, .stage, .creature-bar { width: 100%; max-width: 960px; }
     header {
-      width: 100%;
-      max-width: 960px;
       display: flex;
       align-items: center;
       justify-content: space-between;
@@ -52,19 +53,17 @@
     .live { color: var(--text); }
     @keyframes pulse { 50% { opacity: .35; } }
     .stage {
-      width: 100%;
-      max-width: 960px;
       aspect-ratio: 16 / 9;
       background: #000;
       border: 1px solid var(--border);
       border-radius: 12px;
       overflow: hidden;
       position: relative;
-      display: grid;
-      place-items: center;
     }
-    video { width: 100%; height: 100%; object-fit: contain; }
-    video.mirror { transform: scaleX(-1); }
+    /* The video only feeds the canvas; it stays in the DOM so every browser keeps decoding it. */
+    video { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+    canvas { width: 100%; height: 100%; object-fit: contain; display: block; }
+    canvas.mirror { transform: scaleX(-1); }
     .message {
       position: absolute;
       inset: 0;
@@ -74,15 +73,50 @@
       text-align: center;
       color: #ccc;
     }
+    .banner {
+      position: absolute;
+      left: 50%;
+      top: 12px;
+      transform: translateX(-50%);
+      background: rgba(0, 0, 0, .65);
+      color: #fff;
+      padding: 6px 14px;
+      border-radius: 999px;
+      font-size: 13px;
+      pointer-events: none;
+      white-space: nowrap;
+    }
+    .creature-bar {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+    .next {
+      font: inherit;
+      font-size: 20px;
+      font-weight: 700;
+      padding: 16px 32px;
+      border-radius: 14px;
+      border: none;
+      color: #fff;
+      background: radial-gradient(120% 140% at 30% 20%, #1f5fa8 0%, var(--abyss) 70%);
+      box-shadow: 0 0 0 1px rgba(76, 201, 255, .35), 0 6px 24px rgba(76, 201, 255, .35);
+      cursor: pointer;
+      transition: transform .12s ease, box-shadow .2s ease;
+    }
+    .next:hover { box-shadow: 0 0 0 1px rgba(76, 201, 255, .6), 0 8px 32px rgba(76, 201, 255, .55); }
+    .next:active { transform: scale(.96); }
+    .about { flex: 1; min-width: 220px; }
+    .about strong { display: block; font-size: 17px; }
+    .about span { color: var(--muted); font-size: 14px; }
     .controls {
-      width: 100%;
-      max-width: 960px;
       display: flex;
       gap: 10px;
       flex-wrap: wrap;
       align-items: center;
     }
-    button, select {
+    .controls button, select {
       font: inherit;
       padding: 8px 14px;
       border-radius: 8px;
@@ -92,7 +126,7 @@
       cursor: pointer;
     }
     select { max-width: 100%; }
-    button:hover { border-color: var(--muted); }
+    .controls button:hover { border-color: var(--muted); }
     .clock { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; font-size: 13px; }
   </style>
 </head>
@@ -103,29 +137,572 @@
   </header>
 
   <div class="stage">
-    <video id="video" class="mirror" autoplay playsinline muted></video>
+    <video id="video" autoplay playsinline muted></video>
+    <canvas id="canvas" class="mirror"></canvas>
     <div class="message" id="message">Requesting camera access…</div>
+    <div class="banner" id="banner" hidden></div>
+  </div>
+
+  <div class="creature-bar">
+    <button class="next" id="nextBtn">Next creature 🫧</button>
+    <div class="about" aria-live="polite">
+      <strong id="creatureName"></strong>
+      <span id="creatureFact"></span>
+    </div>
   </div>
 
   <div class="controls">
     <select id="cameraSelect" aria-label="Camera" hidden></select>
     <button id="toggleBtn">Pause</button>
     <button id="mirrorBtn">Mirror: on</button>
+    <button id="shoulderBtn">Switch shoulder</button>
     <button id="snapBtn">Save snapshot</button>
     <span class="clock" id="clock"></span>
   </div>
 
-  <script>
+  <script type="module">
     const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
     const message = document.getElementById('message');
+    const banner = document.getElementById('banner');
     const statusEl = document.getElementById('status');
     const statusText = document.getElementById('statusText');
     const cameraSelect = document.getElementById('cameraSelect');
     const toggleBtn = document.getElementById('toggleBtn');
     const mirrorBtn = document.getElementById('mirrorBtn');
+    const shoulderBtn = document.getElementById('shoulderBtn');
     const snapBtn = document.getElementById('snapBtn');
+    const nextBtn = document.getElementById('nextBtn');
+    const creatureName = document.getElementById('creatureName');
+    const creatureFact = document.getElementById('creatureFact');
+
+    const MAX_WIDTH = 1280;
     let stream = null;
 
+    // ======================================================================
+    // Creatures. Each draws itself around (0, 0) = the spot where it sits,
+    // in a 100-unit box (x -50..50, y -100..0), facing left (-x).
+    // ======================================================================
+    const TAU = Math.PI * 2;
+
+    function blink(t, seed) {
+      const p = (t + seed) % 4.3;
+      return p < 0.14 ? 0.12 : 1;
+    }
+    function eye(c, x, y, r, t, seed, iris = '#111', white = '#f4f1e8') {
+      c.save();
+      c.translate(x, y);
+      c.scale(1, blink(t, seed));
+      c.fillStyle = white;
+      c.beginPath(); c.arc(0, 0, r, 0, TAU); c.fill();
+      c.fillStyle = iris;
+      c.beginPath(); c.arc(-r * 0.25, r * 0.1, r * 0.6, 0, TAU); c.fill();
+      c.fillStyle = 'rgba(255,255,255,.9)';
+      c.beginPath(); c.arc(-r * 0.45, -r * 0.3, r * 0.22, 0, TAU); c.fill();
+      c.restore();
+    }
+    function glowDot(c, x, y, r, color, strength = 1) {
+      c.save();
+      c.globalCompositeOperation = 'lighter';
+      const g = c.createRadialGradient(x, y, 0, x, y, r * 4);
+      g.addColorStop(0, color);
+      g.addColorStop(0.25, color.replace(/[\d.]+\)$/, `${0.5 * strength})`));
+      g.addColorStop(1, 'rgba(0,0,0,0)');
+      c.fillStyle = g;
+      c.beginPath(); c.arc(x, y, r * 4, 0, TAU); c.fill();
+      c.restore();
+    }
+
+    const CREATURES = [
+      {
+        name: 'Anglerfish',
+        fact: 'Dangles a glowing lure from its head to tempt prey into its toothy mouth.',
+        draw(c, t) {
+          c.translate(0, Math.sin(t * 2) * 2);
+          // tail
+          c.fillStyle = '#2b1c15';
+          c.beginPath(); c.moveTo(34, -38); c.lineTo(56 + Math.sin(t * 5) * 3, -58); c.lineTo(50, -36); c.lineTo(56 + Math.sin(t * 5) * 3, -12); c.closePath(); c.fill();
+          // body
+          const g = c.createRadialGradient(-8, -52, 4, 0, -36, 46);
+          g.addColorStop(0, '#7a5644'); g.addColorStop(0.7, '#3a261c'); g.addColorStop(1, '#1a0f0a');
+          c.fillStyle = g;
+          c.beginPath(); c.ellipse(0, -36, 42, 32, 0, 0, TAU); c.fill();
+          // warty spots
+          c.fillStyle = 'rgba(200,160,130,.25)';
+          for (const [x, y, r] of [[8, -55, 3], [20, -40, 2.5], [14, -22, 2], [-2, -60, 2], [26, -52, 2]]) { c.beginPath(); c.arc(x, y, r, 0, TAU); c.fill(); }
+          // mouth
+          const open = 11 + Math.sin(t * 1.3) * 2;
+          c.fillStyle = '#12070a';
+          c.beginPath(); c.ellipse(-26, -28, 17, open, -0.15, 0, TAU); c.fill();
+          c.fillStyle = '#ece3c8';
+          for (let i = 0; i < 6; i++) {
+            const x = -40 + i * 5.5;
+            c.beginPath(); c.moveTo(x, -28 - open + 2); c.lineTo(x + 2, -28 - open + 11 + (i % 2) * 4); c.lineTo(x + 4, -28 - open + 2); c.fill();
+            c.beginPath(); c.moveTo(x + 1, -28 + open - 1); c.lineTo(x + 3, -28 + open - 10 - (i % 2) * 4); c.lineTo(x + 5, -28 + open - 1); c.fill();
+          }
+          // pectoral fin
+          c.fillStyle = 'rgba(90,60,45,.9)';
+          c.beginPath(); c.ellipse(12, -18, 12, 6, 0.6 + Math.sin(t * 4) * 0.2, 0, TAU); c.fill();
+          eye(c, -12, -50, 5, t, 0.3, '#0c1a22', '#bfe8f0');
+          // lure
+          const sway = Math.sin(t * 1.7) * 6;
+          const lx = -38 + sway, ly = -96 + Math.cos(t * 1.7) * 3;
+          c.strokeStyle = '#4a3428'; c.lineWidth = 2.2; c.lineCap = 'round';
+          c.beginPath(); c.moveTo(-14, -64); c.quadraticCurveTo(-8, -104, lx, ly); c.stroke();
+          const pulse = 0.75 + Math.sin(t * 3) * 0.25;
+          glowDot(c, lx, ly, 6, `rgba(140,255,240,${pulse})`, pulse);
+          c.fillStyle = '#e6fffb';
+          c.beginPath(); c.arc(lx, ly, 4, 0, TAU); c.fill();
+        }
+      },
+      {
+        name: 'Dumbo octopus',
+        fact: 'Flaps ear-like fins to swim. It lives deeper than any other known octopus.',
+        draw(c, t) {
+          c.translate(0, Math.sin(t * 1.6) * 3);
+          const flap = Math.sin(t * 4) * 0.45;
+          // ears
+          c.fillStyle = 'rgba(240,130,90,.9)';
+          for (const s of [-1, 1]) {
+            c.save(); c.translate(s * 26, -74); c.rotate(s * (0.5 + flap));
+            c.beginPath(); c.ellipse(s * 10, 0, 15, 9, 0, 0, TAU); c.fill(); c.restore();
+          }
+          // webbed skirt
+          const sg = c.createLinearGradient(0, -50, 0, 0);
+          sg.addColorStop(0, '#f39a76'); sg.addColorStop(1, '#d9644a');
+          c.fillStyle = sg;
+          c.beginPath(); c.moveTo(-30, -50);
+          for (let i = 0; i <= 8; i++) {
+            const x = -34 + i * 8.5, y = -6 + Math.sin(t * 3 + i) * 3;
+            c.quadraticCurveTo(x - 4, y - 8, x, y);
+          }
+          c.lineTo(30, -50); c.closePath(); c.fill();
+          // curly arm tips
+          c.strokeStyle = '#c95a42'; c.lineWidth = 2; c.lineCap = 'round';
+          for (let i = 0; i <= 8; i++) {
+            const x = -34 + i * 8.5, y = -6 + Math.sin(t * 3 + i) * 3;
+            c.beginPath(); c.arc(x + 2, y + 2, 2.5, Math.PI, TAU * 0.95); c.stroke();
+          }
+          // head
+          const hg = c.createRadialGradient(-8, -76, 4, 0, -62, 36);
+          hg.addColorStop(0, '#ffd2b8'); hg.addColorStop(0.6, '#f59070'); hg.addColorStop(1, '#d4604a');
+          c.fillStyle = hg;
+          c.beginPath(); c.ellipse(0, -62, 30, 32, 0, 0, TAU); c.fill();
+          eye(c, -11, -58, 7.5, t, 1.1);
+          eye(c, 11, -58, 7.5, t, 1.1);
+          c.fillStyle = 'rgba(255,120,120,.35)';
+          c.beginPath(); c.arc(-19, -48, 4, 0, TAU); c.arc(19, -48, 4, 0, TAU); c.fill();
+        }
+      },
+      {
+        name: 'Atolla jellyfish',
+        fact: 'When attacked it sets off a ring of flashing blue lights, like a burglar alarm.',
+        draw(c, t) {
+          const pulse = Math.sin(t * 2.6);
+          c.translate(0, -8 + pulse * 3);
+          // long trailing tentacles
+          c.lineCap = 'round';
+          for (let i = 0; i < 12; i++) {
+            const a = (i / 11) * Math.PI;
+            const x0 = -Math.cos(a) * 30;
+            c.strokeStyle = `rgba(255,${120 + i * 6},150,.55)`;
+            c.lineWidth = 1.4;
+            c.beginPath(); c.moveTo(x0, -60);
+            c.bezierCurveTo(x0 + Math.sin(t * 2 + i) * 10, -40, x0 - Math.sin(t * 1.6 + i) * 12, -20, x0 * 0.6 + Math.sin(t + i) * 8, 6);
+            c.stroke();
+          }
+          // bell
+          const w = 36 * (1 + pulse * 0.06), h = 28 * (1 - pulse * 0.06);
+          const bg = c.createRadialGradient(0, -74, 2, 0, -66, 40);
+          bg.addColorStop(0, 'rgba(255,60,90,.95)'); bg.addColorStop(0.45, 'rgba(160,20,50,.75)'); bg.addColorStop(1, 'rgba(90,10,40,.45)');
+          c.fillStyle = bg;
+          c.beginPath(); c.ellipse(0, -62, w, h, 0, Math.PI, TAU);
+          c.quadraticCurveTo(0, -54, -w, -62); c.fill();
+          // grooves
+          c.strokeStyle = 'rgba(255,180,200,.35)'; c.lineWidth = 1;
+          for (let i = -3; i <= 3; i++) { c.beginPath(); c.moveTo(i * 3, -62 - h + 2); c.quadraticCurveTo(i * 9, -70, i * 11, -60); c.stroke(); }
+          // core
+          glowDot(c, 0, -70, 6, 'rgba(255,50,80,.9)');
+          // alarm lights around the rim
+          for (let i = 0; i < 10; i++) {
+            const a = Math.PI + (i / 9) * Math.PI;
+            const on = 0.5 + 0.5 * Math.sin(t * 6 - i * 0.9);
+            glowDot(c, Math.cos(a) * w * 0.98, -62 + Math.sin(a) * h * 0.25 + 2, 1.8, `rgba(90,200,255,${on})`, on);
+          }
+        }
+      },
+      {
+        name: 'Vampire squid',
+        fact: 'Neither vampire nor squid. It drifts in the dark eating falling "marine snow".',
+        draw(c, t) {
+          c.translate(0, Math.sin(t * 1.4) * 2);
+          const flap = Math.sin(t * 3) * 0.35;
+          // fins
+          c.fillStyle = '#5a0a18';
+          for (const s of [-1, 1]) {
+            c.save(); c.translate(s * 14, -94); c.rotate(s * (0.7 + flap));
+            c.beginPath(); c.ellipse(s * 8, 0, 11, 6, 0, 0, TAU); c.fill(); c.restore();
+          }
+          // cloak
+          const cg = c.createLinearGradient(0, -60, 0, 0);
+          cg.addColorStop(0, '#6e0f22'); cg.addColorStop(1, '#2a030b');
+          c.fillStyle = cg;
+          c.beginPath(); c.moveTo(-18, -60);
+          const tips = [];
+          for (let i = 0; i <= 7; i++) {
+            const x = -44 + i * (88 / 7), y = -4 + Math.sin(t * 2 + i * 0.8) * 3 - (i === 0 || i === 7 ? 10 : 0);
+            tips.push([x, y]);
+            if (i === 0) c.lineTo(x, y); else c.quadraticCurveTo(x - 6, y - 12, x, y);
+          }
+          c.lineTo(18, -60); c.closePath(); c.fill();
+          // arm ridges with white cirri
+          c.strokeStyle = 'rgba(20,0,5,.6)'; c.lineWidth = 1.6;
+          for (const [x, y] of tips) { c.beginPath(); c.moveTo(x * 0.25, -52); c.lineTo(x, y); c.stroke(); }
+          c.strokeStyle = 'rgba(255,230,230,.6)'; c.lineWidth = 0.8;
+          for (const [x, y] of tips) for (let k = 1; k < 4; k++) {
+            const px = x * 0.25 + (x - x * 0.25) * k / 4, py = -52 + (y + 52) * k / 4;
+            c.beginPath(); c.moveTo(px, py); c.lineTo(px + 2, py + 1.5); c.stroke();
+          }
+          // mantle
+          const mg = c.createRadialGradient(-6, -86, 2, 0, -74, 28);
+          mg.addColorStop(0, '#b4283e'); mg.addColorStop(1, '#4c0714');
+          c.fillStyle = mg;
+          c.beginPath(); c.ellipse(0, -76, 20, 24, 0, 0, TAU); c.fill();
+          // huge blue eyes
+          for (const s of [-1, 1]) {
+            glowDot(c, s * 10, -62, 4, 'rgba(80,190,255,.7)', 0.6);
+            eye(c, s * 10, -62, 7, t, 2.2, '#061a33', '#6fd3ff');
+          }
+          // glowing arm-tip photophores
+          for (const [x, y] of [tips[0], tips[7]]) glowDot(c, x, y, 2, `rgba(120,210,255,${0.6 + 0.4 * Math.sin(t * 2)})`);
+        }
+      },
+      {
+        name: 'Blobfish',
+        fact: 'Looks like a normal fish deep down. The famous blob only happens at the surface.',
+        draw(c, t) {
+          const wob = Math.sin(t * 2) * 0.03;
+          c.scale(1 + wob, 1 - wob);
+          const g = c.createRadialGradient(-10, -52, 6, 0, -30, 50);
+          g.addColorStop(0, '#ffd0d0'); g.addColorStop(0.6, '#f1a3a8'); g.addColorStop(1, '#c97380');
+          c.fillStyle = g;
+          c.beginPath();
+          c.moveTo(-44, -2);
+          c.bezierCurveTo(-52, -40, -30, -70, 0, -68);
+          c.bezierCurveTo(32, -70, 54, -40, 44, -2);
+          c.bezierCurveTo(20, 4, -20, 4, -44, -2);
+          c.fill();
+          // little fin
+          c.fillStyle = 'rgba(220,130,140,.8)';
+          c.beginPath(); c.ellipse(34, -20, 9, 5, 0.8 + Math.sin(t * 3) * 0.2, 0, TAU); c.fill();
+          // droopy nose
+          const droop = Math.sin(t * 1.5) * 1.5;
+          c.fillStyle = '#e88e98';
+          c.beginPath(); c.ellipse(-4, -36 + droop, 12, 15, 0.1, 0, TAU); c.fill();
+          c.fillStyle = 'rgba(255,255,255,.35)';
+          c.beginPath(); c.ellipse(-8, -42 + droop, 4, 5, 0, 0, TAU); c.fill();
+          // eyes
+          eye(c, -20, -50, 4, t, 0.8, '#1a0d0d', '#3a1c1c');
+          eye(c, 14, -50, 4, t, 0.8, '#1a0d0d', '#3a1c1c');
+          // frown
+          c.strokeStyle = '#a2505c'; c.lineWidth = 2.2; c.lineCap = 'round';
+          c.beginPath(); c.arc(-4, -6, 14, -Math.PI * 0.85, -Math.PI * 0.15); c.stroke();
+        }
+      },
+      {
+        name: 'Sea angel',
+        fact: 'A see-through sea slug the size of a fingernail that "flies" through water.',
+        draw(c, t) {
+          c.translate(0, -6 + Math.sin(t * 3) * 5);
+          const flap = Math.sin(t * 7) * 0.55;
+          // wings
+          c.fillStyle = 'rgba(200,230,255,.5)';
+          c.strokeStyle = 'rgba(220,240,255,.9)'; c.lineWidth = 1;
+          for (const s of [-1, 1]) {
+            c.save(); c.translate(s * 8, -68); c.rotate(s * (0.4 + flap));
+            c.beginPath(); c.ellipse(s * 18, 0, 20, 9, 0, 0, TAU); c.fill(); c.stroke(); c.restore();
+          }
+          // body
+          const g = c.createLinearGradient(0, -100, 0, -18);
+          g.addColorStop(0, 'rgba(235,245,255,.8)'); g.addColorStop(1, 'rgba(180,215,255,.35)');
+          c.fillStyle = g;
+          c.beginPath();
+          c.moveTo(0, -100);
+          c.bezierCurveTo(14, -100, 16, -78, 12, -62);
+          c.bezierCurveTo(8, -40, 3, -26, 0, -16);
+          c.bezierCurveTo(-3, -26, -8, -40, -12, -62);
+          c.bezierCurveTo(-16, -78, -14, -100, 0, -100);
+          c.fill(); c.stroke();
+          // orange gut and head
+          glowDot(c, 0, -56, 5, 'rgba(255,110,40,.7)', 0.5);
+          c.fillStyle = '#ff6a2a';
+          c.beginPath(); c.ellipse(0, -54, 6, 13, 0, 0, TAU); c.fill();
+          c.fillStyle = '#ff8a4a';
+          c.beginPath(); c.arc(-3, -95, 3, 0, TAU); c.arc(3, -95, 3, 0, TAU); c.fill();
+        }
+      },
+      {
+        name: 'Barreleye fish',
+        fact: 'Has a see-through head, with glowing green eyes that swivel to look up through it.',
+        draw(c, t) {
+          c.translate(0, Math.sin(t * 1.8) * 2);
+          // tail
+          c.fillStyle = '#1e2129';
+          c.beginPath(); c.moveTo(38, -34); c.lineTo(58, -48 + Math.sin(t * 6) * 3); c.lineTo(58, -20 + Math.sin(t * 6) * 3); c.closePath(); c.fill();
+          // body
+          const g = c.createLinearGradient(0, -52, 0, -18);
+          g.addColorStop(0, '#4a4f5c'); g.addColorStop(1, '#1b1d24');
+          c.fillStyle = g;
+          c.beginPath(); c.ellipse(8, -34, 34, 15, 0, 0, TAU); c.fill();
+          // big fins
+          c.fillStyle = 'rgba(70,75,90,.85)';
+          c.beginPath(); c.ellipse(4, -16, 14, 5, 0.4 + Math.sin(t * 4) * 0.3, 0, TAU); c.fill();
+          c.beginPath(); c.ellipse(20, -50, 12, 4, -0.5, 0, TAU); c.fill();
+          // "nostrils" that look like eyes
+          c.fillStyle = '#0a0b10';
+          c.beginPath(); c.arc(-24, -38, 2.4, 0, TAU); c.fill();
+          // mouth
+          c.strokeStyle = '#0a0b10'; c.lineWidth = 1.5;
+          c.beginPath(); c.moveTo(-28, -30); c.lineTo(-20, -29); c.stroke();
+          // tube eyes swivelling inside the dome
+          const look = Math.sin(t * 0.8) * 0.5;
+          for (const x of [-16, -6]) {
+            c.save(); c.translate(x, -50); c.rotate(look);
+            glowDot(c, 0, -6, 3, 'rgba(90,255,110,.7)', 0.6);
+            c.fillStyle = '#5cff6c';
+            c.beginPath(); c.roundRect(-3, -10, 6, 12, 3); c.fill();
+            c.fillStyle = '#0d3a12';
+            c.beginPath(); c.arc(0, -8, 2, 0, TAU); c.fill();
+            c.restore();
+          }
+          // transparent dome
+          c.fillStyle = 'rgba(170,230,255,.18)';
+          c.strokeStyle = 'rgba(210,245,255,.8)'; c.lineWidth = 1.2;
+          c.beginPath(); c.ellipse(-11, -52, 20, 17, 0, Math.PI * 0.95, Math.PI * 2.05); c.fill(); c.stroke();
+          c.strokeStyle = 'rgba(255,255,255,.6)';
+          c.beginPath(); c.arc(-15, -58, 9, Math.PI * 1.1, Math.PI * 1.45); c.stroke();
+        }
+      },
+      {
+        name: 'Firefly squid',
+        fact: 'Covered in hundreds of tiny lights it can flash on and off in patterns.',
+        draw(c, t) {
+          c.translate(0, -4 + Math.sin(t * 2.2) * 4);
+          c.rotate(Math.sin(t * 1.1) * 0.08);
+          // arms
+          c.strokeStyle = 'rgba(120,140,220,.9)'; c.lineWidth = 2.4; c.lineCap = 'round';
+          for (let i = 0; i < 8; i++) {
+            const x0 = -8 + i * (16 / 7);
+            c.beginPath(); c.moveTo(x0, -32);
+            c.quadraticCurveTo(x0 + Math.sin(t * 3 + i) * 6, -18, x0 * 1.8 + Math.sin(t * 2 + i) * 5, -2);
+            c.stroke();
+          }
+          // mantle
+          const g = c.createLinearGradient(-12, 0, 12, 0);
+          g.addColorStop(0, '#3a4a9c'); g.addColorStop(0.5, '#7d8fe0'); g.addColorStop(1, '#3a4a9c');
+          c.fillStyle = g;
+          c.beginPath(); c.ellipse(0, -64, 12, 30, 0, 0, TAU); c.fill();
+          // fins at the top
+          c.fillStyle = '#5a6cc4';
+          c.beginPath(); c.moveTo(0, -100); c.lineTo(-14, -80); c.lineTo(0, -84); c.lineTo(14, -80); c.closePath(); c.fill();
+          // head
+          c.fillStyle = '#6b7dd4';
+          c.beginPath(); c.ellipse(0, -36, 10, 7, 0, 0, TAU); c.fill();
+          eye(c, -7, -37, 3.6, t, 3.3);
+          eye(c, 7, -37, 3.6, t, 3.3);
+          // twinkling photophores
+          const dots = [[0, -90], [-6, -78], [6, -76], [-8, -64], [4, -66], [-3, -54], [8, -52], [0, -44], [-9, -47], [-13, -10], [13, -8], [-3, -4], [5, -3]];
+          dots.forEach(([x, y], i) => {
+            const on = 0.35 + 0.65 * Math.max(0, Math.sin(t * 4 + i * 1.7));
+            glowDot(c, x, y, 1.4, `rgba(80,200,255,${on})`, on);
+          });
+        }
+      }
+    ];
+
+    // ---------- which creature, and the pop-in / pop-out animation ----------
+    let deck = [];
+    let current = null, currentStart = 0;
+    let leaving = null, leavingStart = 0;
+    let bubbles = [];
+    const POP_IN = 0.55, POP_OUT = 0.22;
+
+    function drawCard() {
+      if (!deck.length) {
+        deck = CREATURES.map((_, i) => i).sort(() => Math.random() - 0.5);
+        if (current !== null && deck[0] === current) deck.push(deck.shift());
+      }
+      return deck.shift();
+    }
+    function nextCreature() {
+      const now = performance.now() / 1000;
+      if (current !== null) { leaving = current; leavingStart = now; }
+      current = drawCard();
+      currentStart = now + (leaving !== null ? POP_OUT * 0.6 : 0);
+      spawnBubbles(currentStart);
+      creatureName.textContent = CREATURES[current].name;
+      creatureFact.textContent = CREATURES[current].fact;
+    }
+    function spawnBubbles(at) {
+      for (let i = 0; i < 16; i++) {
+        bubbles.push({
+          born: at + Math.random() * 0.15,
+          x: (Math.random() - 0.5) * 70,
+          y: -30 - Math.random() * 40,
+          vx: (Math.random() - 0.5) * 40,
+          vy: -40 - Math.random() * 60,
+          r: 2 + Math.random() * 5,
+          life: 0.8 + Math.random() * 0.6
+        });
+      }
+    }
+    const easeOutBack = x => { const c1 = 1.9; return 1 + (c1 + 1) * (x - 1) ** 3 + c1 * (x - 1) ** 2; };
+
+    function drawCreatures(now, pos) {
+      const { x, y, size, facing } = pos;
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.scale(size / 100, size / 100);
+
+      if (leaving !== null) {
+        const p = (now - leavingStart) / POP_OUT;
+        if (p >= 1) leaving = null;
+        else {
+          ctx.save();
+          const s = 1 - p * p;
+          ctx.translate(0, -50); ctx.rotate(p * 0.8); ctx.scale(s * facing, s); ctx.translate(0, 50);
+          ctx.globalAlpha = 1 - p;
+          CREATURES[leaving].draw(ctx, now);
+          ctx.restore();
+        }
+      }
+      if (current !== null && now >= currentStart) {
+        const p = Math.min(1, (now - currentStart) / POP_IN);
+        const s = easeOutBack(p);
+        ctx.save();
+        ctx.translate(0, -2);
+        ctx.scale(s * facing, s);
+        // soft contact shadow on the shoulder
+        ctx.fillStyle = 'rgba(0,0,0,.18)';
+        ctx.beginPath(); ctx.ellipse(0, 2, 34, 5, 0, 0, TAU); ctx.fill();
+        CREATURES[current].draw(ctx, now);
+        ctx.restore();
+      }
+
+      // bubbles
+      bubbles = bubbles.filter(b => now - b.born < b.life);
+      ctx.lineWidth = 1.4;
+      for (const b of bubbles) {
+        const a = now - b.born;
+        if (a < 0) continue;
+        const k = a / b.life;
+        ctx.strokeStyle = `rgba(220,245,255,${0.9 * (1 - k)})`;
+        ctx.fillStyle = `rgba(200,240,255,${0.15 * (1 - k)})`;
+        ctx.beginPath(); ctx.arc(b.x + b.vx * a, b.y + b.vy * a, b.r * (1 + k * 0.6), 0, TAU); ctx.fill(); ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    // ======================================================================
+    // Shoulder tracking with MediaPipe Pose (runs locally in the browser).
+    // ======================================================================
+    let pose = null;              // null = not loaded yet, false = failed
+    let side = 'right';           // the person's right shoulder (appears on the right in the mirrored view)
+    let target = null;            // latest raw shoulder position
+    let smoothed = null;          // what we draw
+    let lastSeen = 0;
+    let frameNo = 0;
+
+    async function loadPose() {
+      try {
+        const v = '0.10.14';
+        const { FilesetResolver, PoseLandmarker } = await import(`https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${v}/vision_bundle.mjs`);
+        const files = await FilesetResolver.forVisionTasks(`https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${v}/wasm`);
+        pose = await PoseLandmarker.createFromOptions(files, {
+          baseOptions: {
+            modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task',
+            delegate: 'GPU'
+          },
+          runningMode: 'VIDEO',
+          numPoses: 1
+        });
+      } catch (err) {
+        console.warn('Pose tracker unavailable', err);
+        pose = false;
+      }
+    }
+
+    function trackShoulder() {
+      if (!pose || frameNo % 2) return;
+      const res = pose.detectForVideo(video, performance.now());
+      const lm = res.landmarks?.[0];
+      if (!lm) return;
+      const W = canvas.width, H = canvas.height;
+      const l = lm[11], r = lm[12], nose = lm[0];
+      const sh = side === 'right' ? r : l;
+      const other = side === 'right' ? l : r;
+      const width = Math.hypot((l.x - r.x) * W, (l.y - r.y) * H);
+      target = {
+        // sit a little outwards from the shoulder joint, on top of it
+        x: (sh.x + (sh.x - other.x) * 0.12) * W,
+        y: sh.y * H - width * 0.03,
+        size: Math.max(70, Math.min(H * 0.55, width * 0.5)),
+        facing: nose.x > sh.x ? -1 : 1        // look towards your head
+      };
+      lastSeen = performance.now();
+    }
+
+    function creaturePosition() {
+      const W = canvas.width, H = canvas.height;
+      const fallback = { x: W * 0.2, y: H * 0.92, size: H * 0.4, facing: -1 };
+      const seen = target && performance.now() - lastSeen < 1500;
+      const goal = seen ? target : fallback;
+      if (!smoothed) smoothed = { ...goal };
+      const k = 0.35;
+      smoothed.x += (goal.x - smoothed.x) * k;
+      smoothed.y += (goal.y - smoothed.y) * k;
+      smoothed.size += (goal.size - smoothed.size) * 0.15;
+      smoothed.facing = goal.facing;
+      // keep the whole creature in frame even if your shoulder is cut off at the bottom
+      const out = { ...smoothed };
+      out.y = Math.min(out.y, H - out.size * 0.02);
+      out.x = Math.max(out.size * 0.55, Math.min(W - out.size * 0.55, out.x));
+      out.y = Math.max(out.size * 1.05, out.y);
+
+      if (pose === null) setBanner('Loading shoulder tracker…');
+      else if (pose === false) setBanner('Shoulder tracker unavailable, so your creature is waiting in the corner');
+      else if (!seen) setBanner('Step into view so your creature can find your shoulder');
+      else setBanner('');
+      return out;
+    }
+    function setBanner(text) {
+      if (banner.textContent !== text) banner.textContent = text;
+      banner.hidden = !text;
+    }
+
+    // ---------- render loop ----------
+    function renderFrame() {
+      if (!stream) return;
+      if (video.readyState >= 2 && video.videoWidth) {
+        const scale = Math.min(1, MAX_WIDTH / video.videoWidth);
+        const w = Math.round(video.videoWidth * scale), h = Math.round(video.videoHeight * scale);
+        if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; smoothed = null; }
+        ctx.drawImage(video, 0, 0, w, h);
+        trackShoulder();
+        drawCreatures(performance.now() / 1000, creaturePosition());
+        frameNo++;
+      }
+      scheduleFrame();
+    }
+    function scheduleFrame() {
+      if ('requestVideoFrameCallback' in video) video.requestVideoFrameCallback(renderFrame);
+      else requestAnimationFrame(renderFrame);
+    }
+
+    // ======================================================================
+    // Camera + controls
+    // ======================================================================
     function setStatus(live, text) {
       statusEl.classList.toggle('live', live);
       statusText.textContent = text;
@@ -135,6 +712,8 @@
       if (stream) stream.getTracks().forEach(t => t.stop());
       stream = null;
       video.srcObject = null;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      banner.hidden = true;
     }
 
     async function start(deviceId) {
@@ -142,19 +721,22 @@
       message.hidden = false;
       message.textContent = 'Requesting camera access…';
       try {
+        const size = { width: { ideal: 1280 }, height: { ideal: 720 } };
         stream = await navigator.mediaDevices.getUserMedia({
-          video: deviceId ? { deviceId: { exact: deviceId }, width: { ideal: 1920 }, height: { ideal: 1080 } }
-                          : { width: { ideal: 1920 }, height: { ideal: 1080 } },
+          video: deviceId ? { deviceId: { exact: deviceId }, ...size } : size,
           audio: false
         });
         video.srcObject = stream;
+        await video.play().catch(() => {});
         message.hidden = true;
-        const track = stream.getVideoTracks()[0];
-        const s = track.getSettings();
+        const s = stream.getVideoTracks()[0].getSettings();
         setStatus(true, `LIVE · ${s.width}×${s.height}`);
         toggleBtn.textContent = 'Pause';
+        if (pose === null) loadPose();
+        scheduleFrame();
         await listCameras(s.deviceId);
       } catch (err) {
+        stream = null;
         setStatus(false, 'Offline');
         message.textContent = err.name === 'NotAllowedError'
           ? 'Camera access was denied. Allow camera access for this page in your browser (and in System Settings → Privacy & Security → Camera), then reload.'
@@ -176,6 +758,8 @@
     }
 
     cameraSelect.addEventListener('change', () => start(cameraSelect.value));
+    nextBtn.addEventListener('click', nextCreature);
+    shoulderBtn.addEventListener('click', () => { side = side === 'right' ? 'left' : 'right'; target = null; });
 
     toggleBtn.addEventListener('click', () => {
       if (stream) {
@@ -190,32 +774,30 @@
     });
 
     mirrorBtn.addEventListener('click', () => {
-      const on = video.classList.toggle('mirror');
+      const on = canvas.classList.toggle('mirror');
       mirrorBtn.textContent = `Mirror: ${on ? 'on' : 'off'}`;
     });
 
     snapBtn.addEventListener('click', () => {
       if (!stream) return;
-      const canvas = document.createElement('canvas');
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      const ctx = canvas.getContext('2d');
-      if (video.classList.contains('mirror')) {
-        ctx.translate(canvas.width, 0);
-        ctx.scale(-1, 1);
-      }
-      ctx.drawImage(video, 0, 0);
+      const out = document.createElement('canvas');
+      out.width = canvas.width;
+      out.height = canvas.height;
+      const o = out.getContext('2d');
+      if (canvas.classList.contains('mirror')) { o.translate(out.width, 0); o.scale(-1, 1); }
+      o.drawImage(canvas, 0, 0);   // includes the creature
       const a = document.createElement('a');
       a.download = `snapshot-${new Date().toISOString().replace(/[:.]/g, '-')}.png`;
-      a.href = canvas.toDataURL('image/png');
+      a.href = out.toDataURL('image/png');
       a.click();
     });
 
     setInterval(() => { document.getElementById('clock').textContent = new Date().toLocaleString(); }, 1000);
 
+    nextCreature();
     if (!navigator.mediaDevices?.getUserMedia) {
       setStatus(false, 'Unsupported');
-      message.textContent = 'This browser does not support camera access. Open the page at http://localhost:8000 in Chrome, Safari, or Firefox.';
+      message.textContent = 'This browser does not support camera access. Open the page over https:// or http://localhost in Chrome, Safari, or Firefox.';
     } else {
       start();
     }
