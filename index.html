@@ -96,28 +96,13 @@
     }
     .creature-bar {
       display: flex;
-      align-items: center;
-      gap: 16px;
+      align-items: baseline;
+      gap: 10px;
       flex-wrap: wrap;
+      min-height: 48px;
     }
-    .next {
-      font: inherit;
-      font-size: 20px;
-      font-weight: 700;
-      padding: 16px 32px;
-      border-radius: 14px;
-      border: none;
-      color: #fff;
-      background: radial-gradient(120% 140% at 30% 20%, #1f5fa8 0%, var(--abyss) 70%);
-      box-shadow: 0 0 0 1px rgba(76, 201, 255, .35), 0 6px 24px rgba(76, 201, 255, .35);
-      cursor: pointer;
-      transition: transform .12s ease, box-shadow .2s ease;
-    }
-    .next:hover { box-shadow: 0 0 0 1px rgba(76, 201, 255, .6), 0 8px 32px rgba(76, 201, 255, .55); }
-    .next:active { transform: scale(.96); }
-    .about { flex: 1; min-width: 220px; }
-    .about strong { display: block; font-size: 17px; }
-    .about span { color: var(--muted); font-size: 14px; }
+    .creature-bar strong { font-size: 17px; }
+    .creature-bar span { color: var(--muted); font-size: 14px; }
     .controls {
       display: flex;
       gap: 10px;
@@ -136,10 +121,6 @@
     select { max-width: 100%; }
     .controls button:hover { border-color: var(--muted); }
     .clock { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; font-size: 13px; }
-    .credits { width: 100%; max-width: 960px; color: var(--muted); font-size: 12px; margin-top: 8px; }
-    .credits summary { cursor: pointer; }
-    .credits a { color: inherit; }
-    .credits ul { margin: 6px 0 0; padding-left: 18px; }
   </style>
 </head>
 <body>
@@ -152,47 +133,31 @@
     <video id="video" autoplay playsinline muted></video>
     <canvas id="canvas" class="mirror"></canvas>
     <canvas id="gl" class="mirror overlay"></canvas>
+    <canvas id="hud" class="mirror overlay"></canvas>
     <div class="message" id="message">Requesting camera access…</div>
     <div class="banner" id="banner" hidden></div>
   </div>
 
-  <div class="creature-bar">
-    <button class="next" id="nextBtn">Next creature 🫧</button>
-    <div class="about" aria-live="polite">
-      <strong id="creatureName"></strong>
-      <span id="creatureFact"></span>
-    </div>
+  <div class="creature-bar" aria-live="polite">
+    <strong id="creatureName">Deep-sea creatures are swimming around you</strong>
+    <span id="creatureFact">Pinch one with your thumb and finger to catch it.</span>
   </div>
 
   <div class="controls">
     <select id="cameraSelect" aria-label="Camera" hidden></select>
     <button id="toggleBtn">Pause</button>
     <button id="mirrorBtn">Mirror: on</button>
-    <button id="styleBtn">Style: lifelike 3D</button>
     <button id="snapBtn">Save snapshot</button>
     <span class="clock" id="clock"></span>
   </div>
-
-  <details class="credits">
-    <summary>Photo credits</summary>
-    <ul>
-      <li>Humpback anglerfish: <a href="https://commons.wikimedia.org/wiki/File:Humpback_anglerfish.png">Wikimedia Commons</a>, public domain</li>
-      <li>Dumbo octopus: NOAA Okeanos Explorer, <a href="https://commons.wikimedia.org/wiki/File:Dumbo-hires.jpg">public domain</a></li>
-      <li>Atolla jellyfish: NOAA Ocean Explorer, <a href="https://commons.wikimedia.org/wiki/File:Atolla_wyvillei_(Operation_Deep_Scope_2004).jpg">original</a>, <a href="https://creativecommons.org/licenses/by-sa/2.0/">CC BY-SA 2.0</a>; background removed</li>
-      <li>Vampire squid: NOAA National Marine Sanctuaries, <a href="https://commons.wikimedia.org/wiki/File:MBNMS_juvenile_vampire_squid_(49041024167).jpg">public domain</a></li>
-      <li>Sea angel: Kevin Raskoff, NOAA Hidden Ocean 2005, <a href="https://commons.wikimedia.org/wiki/File:Clione_limacina_by_NOAA.jpg">public domain</a></li>
-      <li>Pacific viperfish: NOAA Ocean Exploration, Voyage to the Ridge 2022, <a href="https://commons.wikimedia.org/wiki/File:NOAA_Ocean_Exploration_Viperfish_Chauliodus_danae.jpg">public domain</a></li>
-      <li>Blob sculpin: NOAA/MBARI, <a href="https://commons.wikimedia.org/wiki/File:Psychrolutes_phrictus_1.jpg">public domain</a></li>
-      <li>Sea pig: NOAA/MBARI, <a href="https://commons.wikimedia.org/wiki/File:Scotoplanes_globosa_and_crab_(cropped).jpg">CC0</a></li>
-      <li>Giant isopod: NOAA, <a href="https://commons.wikimedia.org/wiki/File:Bathynomus_giganteus_hi-res.jpg">public domain</a></li>
-    </ul>
-  </details>
 
   <script type="module">
     const video = document.getElementById('video');
     const canvas = document.getElementById('canvas');
     const glCanvas = document.getElementById('gl');
+    const hud = document.getElementById('hud');
     const ctx = canvas.getContext('2d');
+    const hctx = hud.getContext('2d');
     const message = document.getElementById('message');
     const banner = document.getElementById('banner');
     const statusEl = document.getElementById('status');
@@ -201,87 +166,23 @@
     const toggleBtn = document.getElementById('toggleBtn');
     const mirrorBtn = document.getElementById('mirrorBtn');
     const snapBtn = document.getElementById('snapBtn');
-    const styleBtn = document.getElementById('styleBtn');
-    const nextBtn = document.getElementById('nextBtn');
     const creatureName = document.getElementById('creatureName');
     const creatureFact = document.getElementById('creatureFact');
 
     const MAX_WIDTH = 1280;
+    const TAU = Math.PI * 2;
     let stream = null;
 
-    // ======================================================================
-    // Creatures: real photos (public domain / openly licensed, see credits),
-    // cut out of their backgrounds. Each is drawn with (0, 0) = the bottom
-    // centre of the creature, in units where 100 = the creature's base size.
-    //   faces: which way the animal looks in the photo (-1 left, 1 right, 0 either)
-    //   width: how wide it is relative to the base size
-    //   float: drifts up and down more, like it's swimming
-    // ======================================================================
-    const TAU = Math.PI * 2;
-
+    // The 3D creatures from creatures3d.js, in the same order it builds them.
     const CREATURES = [
-      { name: 'Humpback anglerfish', src: 'anglerfish', faces: -1, width: 1.0,
-        fact: 'Dangles a glowing lure from its head to tempt prey into its toothy mouth.' },
-      { name: 'Dumbo octopus', src: 'dumbo', faces: 0, width: 0.95, float: true,
-        fact: 'Flaps ear-like fins to swim. It lives deeper than any other known octopus.' },
-      { name: 'Atolla jellyfish', src: 'atolla', faces: 1, width: 1.3, float: true, pulse: true,
-        fact: 'When attacked it sets off a ring of flashing blue lights, like a burglar alarm.' },
-      { name: 'Vampire squid', src: 'vampire', faces: -1, width: 1.1,
-        fact: 'Neither vampire nor squid. It drifts in the dark eating falling "marine snow".' },
-      { name: 'Sea angel', src: 'seaangel', faces: 0, width: 0.62, float: true, pulse: true,
-        fact: 'A see-through sea slug about the size of a fingernail that "flies" through water.' },
-      { name: 'Pacific viperfish', src: 'viperfish', faces: 1, width: 1.5,
-        fact: 'Its fangs are so long they don\'t fit inside its mouth.' },
-      { name: 'Blob sculpin', src: 'blobsculpin', faces: -1, width: 1.2,
-        fact: 'A cousin of the blobfish. It guards its eggs on the seafloor for months.' },
-      { name: 'Sea pig', src: 'seapig', faces: -1, width: 1.05,
-        fact: 'A sea cucumber that walks across the abyssal mud on tube-feet "legs".' },
-      { name: 'Giant isopod', src: 'isopod', faces: -1, width: 1.2,
-        fact: 'A deep-sea relative of woodlice that can grow as long as your forearm.' },
-    ];
-
-    for (const c of CREATURES) {
-      c.img = new Image();
-      c.img.src = `creatures/${c.src}.webp`;
-      c.draw = drawPhoto;
-    }
-
-    function drawPhoto(g, t) {
-      const img = this.img;
-      if (!img.complete || !img.naturalWidth) return;
-      let w = this.width * 100, h = w * img.naturalHeight / img.naturalWidth;
-      if (h > 115) { w *= 115 / h; h = 115; }
-      const seed = this.src.length;             // so creatures don't all move in sync
-
-      if (this.float) {
-        const lift = 16 + Math.sin(t * 1.4 + seed) * 5;
-        g.translate(0, -lift);
-        g.rotate(Math.sin(t * 0.9 + seed) * 0.06);
-      } else {
-        g.translate(0, Math.sin(t * 1.8 + seed) * 1.2);
-        g.rotate(Math.sin(t * 1.1 + seed) * 0.025);
-      }
-      // gentle breathing / jellyfish pulsing, anchored at the bottom
-      const p = this.pulse ? Math.sin(t * 2.6) * 0.045 : Math.sin(t * 2.2 + seed) * 0.012;
-      g.scale(1 + p, 1 - p);
-
-      g.shadowColor = 'rgba(0, 0, 0, .35)';
-      g.shadowBlur = 14;
-      g.shadowOffsetY = this.float ? 14 : 5;
-      g.drawImage(img, -w / 2, -h, w, h);
-      g.shadowColor = 'transparent';
-    }
-
-    // Lifelike 3D creatures from creatures3d.js, in the same order it builds them.
-    const CREATURES_3D = [
       { name: 'Dumbo octopus', fact: 'Flaps ear-like fins to swim. It lives deeper than any other known octopus.' },
       { name: 'Anglerfish', fact: 'Dangles a glowing lure from its head to tempt prey into its toothy mouth.' },
-      { name: 'Blue dragon', fact: 'A tiny sea slug that floats upside down and steals stinging cells from the jellyfish it eats.' }
+      { name: 'Blue dragon', fact: 'A tiny sea slug that floats upside down and steals stinging cells from the jellyfish it eats.' },
+      { name: 'Barreleye fish', fact: 'Its head is see-through, and its glowing green eyes swivel to look up through it.' },
+      { name: 'Atolla jellyfish', fact: 'When attacked it sets off a ring of flashing blue lights, like a burglar alarm.' }
     ];
-    let style = '3d';            // '3d' or '2d' (the photos above)
-    let stage3d = null;          // null = loading, false = failed
-    const activeCreatures = () => style === '3d' ? CREATURES_3D : CREATURES;
 
+    let stage3d = null;          // null = loading, false = failed
     async function load3D() {
       try {
         const { createStage } = await import('./creatures3d.js');
@@ -289,139 +190,16 @@
       } catch (err) {
         console.warn('3D creatures unavailable', err);
         stage3d = false;
-        if (style === '3d') setStyle('2d');
-        styleBtn.disabled = true;
-        styleBtn.textContent = 'Style: photos (3D unavailable)';
-        styleBtn.title = location.protocol === 'file:'
-          ? 'Open this page through a local server (http://localhost), not as a file, to load the 3D creatures.'
-          : `3D creatures failed to load: ${err.message || err}`;
-        creatureFact.textContent += ` (3D unavailable: ${location.protocol === 'file:' ? 'open via http://localhost, not as a file' : err.message || err})`;
       }
-    }
-    function setStyle(s) {
-      style = s;
-      styleBtn.textContent = `Style: ${s === '3d' ? 'lifelike 3D' : 'photos'}`;
-      glCanvas.hidden = s !== '3d';
-      deck = []; current = null; leaving = null;
-      nextCreature();
-    }
-
-    // ---------- which creature, and the pop-in / pop-out animation ----------
-    let deck = [];
-    let current = null, currentStart = 0;
-    let leaving = null, leavingStart = 0;
-    let bubbles = [];
-    const POP_IN = 0.55, POP_OUT = 0.22;
-
-    function drawCard() {
-      if (!deck.length) {
-        deck = activeCreatures().map((_, i) => i).sort(() => Math.random() - 0.5);
-        if (current !== null && deck[0] === current) deck.push(deck.shift());
-      }
-      return deck.shift();
-    }
-    function nextCreature() {
-      const now = performance.now() / 1000;
-      if (current !== null) { leaving = current; leavingStart = now; }
-      current = drawCard();
-      currentStart = now + (leaving !== null ? POP_OUT * 0.6 : 0);
-      spawnBubbles(currentStart);
-      creatureName.textContent = activeCreatures()[current].name;
-      creatureFact.textContent = activeCreatures()[current].fact;
-    }
-    function spawnBubbles(at) {
-      for (let i = 0; i < 16; i++) {
-        bubbles.push({
-          born: at + Math.random() * 0.15,
-          x: (Math.random() - 0.5) * 70,
-          y: -30 - Math.random() * 40,
-          vx: (Math.random() - 0.5) * 40,
-          vy: -40 - Math.random() * 60,
-          r: 2 + Math.random() * 5,
-          life: 0.8 + Math.random() * 0.6
-        });
-      }
-    }
-    const easeOutBack = x => { const c1 = 1.9; return 1 + (c1 + 1) * (x - 1) ** 3 + c1 * (x - 1) ** 2; };
-
-    // Turn the photo so the creature looks towards your head (when it has a clear front).
-    function flipFor(i, facing) {
-      const f = CREATURES[i].faces;
-      return f === 0 ? 1 : (f === -1 ? facing : -facing);
-    }
-
-    function drawCreatures(now, pos) {
-      if (style === '3d') return draw3D(now, pos);
-      const { x, y, size, facing } = pos;
-      ctx.save();
-      ctx.translate(x, y);
-      ctx.scale(size / 100, size / 100);
-
-      if (leaving !== null) {
-        const p = (now - leavingStart) / POP_OUT;
-        if (p >= 1) leaving = null;
-        else {
-          ctx.save();
-          const s = 1 - p * p;
-          ctx.translate(0, -50); ctx.rotate(p * 0.8); ctx.scale(s * flipFor(leaving, facing), s); ctx.translate(0, 50);
-          ctx.globalAlpha = 1 - p;
-          CREATURES[leaving].draw(ctx, now);
-          ctx.restore();
-        }
-      }
-      if (current !== null && now >= currentStart) {
-        const p = Math.min(1, (now - currentStart) / POP_IN);
-        const s = easeOutBack(p);
-        ctx.save();
-        ctx.translate(0, -2);
-        ctx.translate(0, -50); ctx.rotate(pos.wiggle || 0); ctx.translate(0, 50);
-        ctx.scale(s * flipFor(current, facing), s);
-        CREATURES[current].draw(ctx, now);
-        ctx.restore();
-      }
-      ctx.restore();
-      drawBubbles(now, pos);
-    }
-
-    function draw3D(now, pos) {
-      const items = [];
-      if (leaving !== null) {
-        const p = (now - leavingStart) / POP_OUT;
-        if (p >= 1) leaving = null;
-        else items.push({ ...pos, index: leaving, scale: 1 - p * p, spin: p * 0.8 });
-      }
-      if (current !== null && now >= currentStart) {
-        const s = easeOutBack(Math.min(1, (now - currentStart) / POP_IN));
-        items.push({ ...pos, index: current, scale: s, spin: -(pos.wiggle || 0) });
-      }
-      drawBubbles(now, pos);
-      if (stage3d) stage3d.render(canvas.width, canvas.height, now, items);
-    }
-
-    function drawBubbles(now, { x, y, size }) {
-      ctx.save();
-      ctx.translate(x, y);
-      ctx.scale(size / 100, size / 100);
-      bubbles = bubbles.filter(b => now - b.born < b.life);
-      ctx.lineWidth = 1.4;
-      for (const b of bubbles) {
-        const a = now - b.born;
-        if (a < 0) continue;
-        const k = a / b.life;
-        ctx.strokeStyle = `rgba(220,245,255,${0.9 * (1 - k)})`;
-        ctx.fillStyle = `rgba(200,240,255,${0.15 * (1 - k)})`;
-        ctx.beginPath(); ctx.arc(b.x + b.vx * a, b.y + b.vy * a, b.r * (1 + k * 0.6), 0, TAU); ctx.fill(); ctx.stroke();
-      }
-      ctx.restore();
     }
 
     // ======================================================================
     // Hand tracking with MediaPipe Hands (runs locally in the browser).
-    // Pinch the creature (thumb tip to index tip) to grab it; open your hand
+    // Pinch a creature (thumb tip to index tip) to grab it; open your hand
     // or move it out of view to let go.
     // ======================================================================
     let hands = null;             // null = not loaded yet, false = failed
-    let hand = null;              // the tracked hand: { x, y, pinched, seen }
+    let hand = null;              // the tracked hand: { x, y, pinched, wasPinched, seen }
     let everGrabbed = false;
     let lastTime = performance.now();
 
@@ -463,8 +241,8 @@
         if (hand && nowMs - hand.seen > 250) hand = null;   // gone for a moment = gone
         return;
       }
-      // Follow the same hand between frames; otherwise pick the one nearest the creature.
-      const ref = hand || (body ? { x: body.x, y: body.y - body.size / 2 } : cands[0]);
+      // Follow the same hand between frames; otherwise take the first one seen.
+      const ref = hand || cands[0];
       const c = cands.reduce((a, b) => Math.hypot(a.x - ref.x, a.y - ref.y) <= Math.hypot(b.x - ref.x, b.y - ref.y) ? a : b);
       const wasPinched = hand ? hand.pinched : false;
       // Hysteresis so a pinch doesn't flicker open and shut.
@@ -475,94 +253,177 @@
         : { x: c.x, y: c.y, pinched, wasPinched: false, seen: nowMs };
     }
 
-    // ---------- the creature's own movement ----------
-    let body = null;   // { x, y, vx, vy, size, facing, grabbed, offX, offY, wx, wy, nextWander, wiggle }
+    // ======================================================================
+    // The creatures' own movement: they all swim about at once, keep a little
+    // space between each other, and one at a time can be held.
+    // ======================================================================
+    let bodies = null;
+    let held = null;
+    let bubbles = [];
+    const POP_IN = 0.6;
+    const easeOutBack = x => { const c1 = 1.9; return 1 + (c1 + 1) * (x - 1) ** 3 + c1 * (x - 1) ** 2; };
 
-    function overCreature(px, py) {
-      const cx = body.x, cy = body.y - body.size * 0.5;
-      return Math.abs(px - cx) < body.size * 0.7 && Math.abs(py - cy) < body.size * 0.7;
-    }
+    function creatureSize() { return canvas.height * 0.26; }
 
-    function updateBody(now, dt) {
+    function makeBodies(now) {
       const W = canvas.width, H = canvas.height;
-      const size = H * 0.32;
-      if (!body) body = { x: W * 0.72, y: H * 0.62, vx: 0, vy: 0, size, facing: 1, grabbed: false, offX: 0, offY: 0, wx: W * 0.72, wy: H * 0.62, nextWander: now + 2, wiggle: 0 };
-      body.size = size;
-
-      if (body.grabbed) {
-        if (!hand || !hand.pinched) {
-          // Let go: keep the hand's momentum, so you can throw it.
-          body.grabbed = false;
-          body.nextWander = now + 2.5;
-          spawnBubbles(now);
-        } else {
-          const tx = hand.x + body.offX, ty = hand.y + body.offY;
-          const nx = body.x + (tx - body.x) * 0.7, ny = body.y + (ty - body.y) * 0.7;
-          body.vx = body.vx * 0.5 + ((nx - body.x) / dt) * 0.5;
-          body.vy = body.vy * 0.5 + ((ny - body.y) / dt) * 0.5;
-          body.x = nx; body.y = ny;
-        }
-      } else if (hand && hand.pinched && !hand.wasPinched && overCreature(hand.x, hand.y)) {
-        body.grabbed = true;
-        everGrabbed = true;
-        body.offX = body.x - hand.x;
-        body.offY = body.y - hand.y;
-      }
-
-      if (!body.grabbed) {
-        // Swim about: drift towards a wandering target, with water drag.
-        if (now > body.nextWander) {
-          body.wx = size * 0.7 + Math.random() * (W - size * 1.4);
-          body.wy = size * 1.15 + Math.random() * (H - size * 1.3);
-          body.nextWander = now + 4 + Math.random() * 4;
-        }
-        const drag = Math.exp(-dt * 1.4);
-        body.vx = body.vx * drag + (body.wx - body.x) * 0.25 * dt;
-        body.vy = body.vy * drag + (body.wy - body.y) * 0.25 * dt;
-        const max = W * 1.5;
-        const sp = Math.hypot(body.vx, body.vy);
-        if (sp > max) { body.vx *= max / sp; body.vy *= max / sp; }
-        body.x += body.vx * dt;
-        body.y += body.vy * dt;
-        // bounce gently off the edges of the picture
-        const minX = size * 0.55, maxX = W - size * 0.55, minY = size * 1.05, maxY = H - size * 0.02;
-        if (body.x < minX) { body.x = minX; body.vx = Math.abs(body.vx) * 0.5; }
-        if (body.x > maxX) { body.x = maxX; body.vx = -Math.abs(body.vx) * 0.5; }
-        if (body.y < minY) { body.y = minY; body.vy = Math.abs(body.vy) * 0.5; }
-        if (body.y > maxY) { body.y = maxY; body.vy = -Math.abs(body.vy) * 0.5; }
-      }
-
-      // Look the way it's moving; struggle a bit while held.
-      if (Math.abs(body.vx) > size * 0.15) body.facing = body.vx > 0 ? -1 : 1;
-      const struggle = body.grabbed ? 0.1 * Math.sin(now * 13) + 0.05 * Math.sin(now * 29) : 0;
-      body.wiggle += (struggle - body.wiggle) * 0.3;
-
-      if (style === '3d' && stage3d === null) setBanner('Growing your 3D creature…');
-      else if (hands === null) setBanner('Loading hand tracker…');
-      else if (hands === false) setBanner('Hand tracker unavailable, so your creature just swims about');
-      else if (!everGrabbed) setBanner('Pinch the creature with your fingers to catch it');
-      else setBanner('');
-
-      return { x: body.x, y: body.y, size, facing: body.facing, wiggle: body.wiggle };
+      return CREATURES.map((_, i) => {
+        const x = W * (0.14 + 0.72 * i / (CREATURES.length - 1)), y = H * (0.5 + 0.28 * (i % 2));
+        return { index: i, x, y, vx: 0, vy: 0, facing: i % 2 ? 1 : -1, wx: x, wy: y,
+                 nextWander: now + 2 + i, wiggle: 0, born: now + 0.3 + i * 0.35, bubbled: false };
+      });
     }
 
-    // A small ring at your pinch point so you can see what the tracker sees.
-    function drawHandMarker() {
-      if (!hand || !body) return;
-      const r = Math.max(8, body.size * 0.06);
-      const ready = !body.grabbed && overCreature(hand.x, hand.y);
-      ctx.save();
-      ctx.lineWidth = 3;
-      if (body.grabbed) {
-        ctx.fillStyle = 'rgba(76, 201, 255, .55)';
-        ctx.strokeStyle = 'rgba(200, 240, 255, .95)';
-        ctx.beginPath(); ctx.arc(hand.x, hand.y, r * 0.7, 0, TAU); ctx.fill(); ctx.stroke();
-      } else {
-        ctx.strokeStyle = ready ? 'rgba(76, 201, 255, .95)' : 'rgba(255, 255, 255, .7)';
-        if (ready) { ctx.shadowColor = 'rgba(76, 201, 255, .9)'; ctx.shadowBlur = 12; }
-        ctx.beginPath(); ctx.arc(hand.x, hand.y, r, 0, TAU); ctx.stroke();
+    function hitTest(px, py) {
+      const size = creatureSize();
+      let best = null, bestD = Infinity;
+      for (const b of bodies) {
+        const cx = b.x, cy = b.y - size * 0.5;
+        if (Math.abs(px - cx) < size * 0.7 && Math.abs(py - cy) < size * 0.7) {
+          const d = Math.hypot(px - cx, py - cy);
+          if (d < bestD) { bestD = d; best = b; }
+        }
       }
-      ctx.restore();
+      return best;
+    }
+
+    function spawnBubbles(x, y, size, at) {
+      for (let i = 0; i < 14; i++) {
+        bubbles.push({
+          born: at + Math.random() * 0.15,
+          x: x + (Math.random() - 0.5) * size * 0.7,
+          y: y - size * (0.3 + Math.random() * 0.4),
+          vx: (Math.random() - 0.5) * size * 0.4,
+          vy: -size * (0.4 + Math.random() * 0.6),
+          r: size * (0.02 + Math.random() * 0.05),
+          life: 0.8 + Math.random() * 0.6
+        });
+      }
+    }
+
+    function showInfo(i) {
+      creatureName.textContent = CREATURES[i].name;
+      creatureFact.textContent = CREATURES[i].fact;
+    }
+
+    function updateBodies(now, dt) {
+      const W = canvas.width, H = canvas.height, size = creatureSize();
+      if (!bodies) bodies = makeBodies(now);
+
+      // letting go, or catching one
+      if (held && (!hand || !hand.pinched)) {
+        held.nextWander = now + 2.5;       // it keeps your hand's momentum, so you can throw it
+        spawnBubbles(held.x, held.y, size, now);
+        held = null;
+      } else if (!held && hand && hand.pinched && !hand.wasPinched) {
+        const b = hitTest(hand.x, hand.y);
+        if (b && now >= b.born) {
+          held = b;
+          everGrabbed = true;
+          b.offX = b.x - hand.x;
+          b.offY = b.y - hand.y;
+          showInfo(b.index);
+        }
+      }
+
+      const minX = size * 0.55, maxX = W - size * 0.55, minY = size * 1.05, maxY = H - size * 0.02;
+      for (const b of bodies) {
+        if (!b.bubbled && now >= b.born) { b.bubbled = true; spawnBubbles(b.x, b.y, size, now); }
+        if (b === held) {
+          const tx = hand.x + b.offX, ty = hand.y + b.offY;
+          const nx = b.x + (tx - b.x) * 0.7, ny = b.y + (ty - b.y) * 0.7;
+          b.vx = b.vx * 0.5 + ((nx - b.x) / dt) * 0.5;
+          b.vy = b.vy * 0.5 + ((ny - b.y) / dt) * 0.5;
+          b.x = nx; b.y = ny;
+        } else {
+          // Swim about: drift towards a wandering target, with water drag.
+          if (now > b.nextWander) {
+            b.wx = minX + Math.random() * (maxX - minX);
+            b.wy = minY + Math.random() * (maxY - minY);
+            b.nextWander = now + 4 + Math.random() * 5;
+          }
+          const drag = Math.exp(-dt * 1.4);
+          b.vx = b.vx * drag + (b.wx - b.x) * 0.22 * dt;
+          b.vy = b.vy * drag + (b.wy - b.y) * 0.22 * dt;
+          // keep a little personal space
+          for (const o of bodies) {
+            if (o === b) continue;
+            const dx = b.x - o.x, dy = b.y - o.y, d = Math.hypot(dx, dy) || 1;
+            if (d < size * 0.9) {
+              const push = (size * 0.9 - d) / (size * 0.9) * size * 3 * dt;
+              b.vx += dx / d * push; b.vy += dy / d * push;
+            }
+          }
+          const max = W * 1.5, sp = Math.hypot(b.vx, b.vy);
+          if (sp > max) { b.vx *= max / sp; b.vy *= max / sp; }
+          b.x += b.vx * dt;
+          b.y += b.vy * dt;
+          // bounce gently off the edges of the picture
+          if (b.x < minX) { b.x = minX; b.vx = Math.abs(b.vx) * 0.5; }
+          if (b.x > maxX) { b.x = maxX; b.vx = -Math.abs(b.vx) * 0.5; }
+          if (b.y < minY) { b.y = minY; b.vy = Math.abs(b.vy) * 0.5; }
+          if (b.y > maxY) { b.y = maxY; b.vy = -Math.abs(b.vy) * 0.5; }
+        }
+        // Look the way it's moving; struggle a bit while held.
+        if (Math.abs(b.vx) > size * 0.15) b.facing = b.vx > 0 ? -1 : 1;
+        const struggle = b === held ? 0.1 * Math.sin(now * 13) + 0.05 * Math.sin(now * 29) : 0;
+        b.wiggle += (struggle - b.wiggle) * 0.3;
+      }
+
+      if (stage3d === null) setBanner('Growing your 3D creatures…');
+      else if (stage3d === false) setBanner('The 3D creatures couldn’t load in this browser');
+      else if (hands === null) setBanner('Loading hand tracker…');
+      else if (hands === false) setBanner('Hand tracker unavailable, so the creatures just swim about');
+      else if (!everGrabbed) setBanner('Pinch a creature with your fingers to catch it');
+      else setBanner('');
+    }
+
+    function drawCreatures(now) {
+      const size = creatureSize();
+      const items = [];
+      for (const b of bodies) {
+        if (now < b.born) continue;
+        items.push({
+          index: b.index, x: b.x, y: b.y, size, facing: b.facing,
+          z: b === held ? size * 0.6 : 0,          // the one you're holding comes towards you
+          scale: easeOutBack(Math.min(1, (now - b.born) / POP_IN)),
+          spin: -b.wiggle
+        });
+      }
+      if (stage3d) stage3d.render(canvas.width, canvas.height, now, items);
+    }
+
+    function drawHud(now) {
+      if (hud.width !== canvas.width || hud.height !== canvas.height) { hud.width = canvas.width; hud.height = canvas.height; }
+      hctx.clearRect(0, 0, hud.width, hud.height);
+
+      bubbles = bubbles.filter(b => now - b.born < b.life);
+      hctx.lineWidth = 1.6;
+      for (const b of bubbles) {
+        const a = now - b.born;
+        if (a < 0) continue;
+        const k = a / b.life;
+        hctx.strokeStyle = `rgba(220,245,255,${0.9 * (1 - k)})`;
+        hctx.fillStyle = `rgba(200,240,255,${0.15 * (1 - k)})`;
+        hctx.beginPath(); hctx.arc(b.x + b.vx * a, b.y + b.vy * a, b.r * (1 + k * 0.6), 0, TAU); hctx.fill(); hctx.stroke();
+      }
+
+      // a small ring at your pinch point so you can see what the tracker sees
+      if (!hand) return;
+      const r = Math.max(8, creatureSize() * 0.06);
+      const ready = !held && hitTest(hand.x, hand.y);
+      hctx.save();
+      hctx.lineWidth = 3;
+      if (held) {
+        hctx.fillStyle = 'rgba(76, 201, 255, .55)';
+        hctx.strokeStyle = 'rgba(200, 240, 255, .95)';
+        hctx.beginPath(); hctx.arc(hand.x, hand.y, r * 0.7, 0, TAU); hctx.fill(); hctx.stroke();
+      } else {
+        hctx.strokeStyle = ready ? 'rgba(76, 201, 255, .95)' : 'rgba(255, 255, 255, .7)';
+        if (ready) { hctx.shadowColor = 'rgba(76, 201, 255, .9)'; hctx.shadowBlur = 12; }
+        hctx.beginPath(); hctx.arc(hand.x, hand.y, r, 0, TAU); hctx.stroke();
+      }
+      hctx.restore();
     }
 
     function setBanner(text) {
@@ -576,14 +437,15 @@
       if (video.readyState >= 2 && video.videoWidth) {
         const scale = Math.min(1, MAX_WIDTH / video.videoWidth);
         const w = Math.round(video.videoWidth * scale), h = Math.round(video.videoHeight * scale);
-        if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; body = null; }
+        if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; bodies = null; held = null; }
         ctx.drawImage(video, 0, 0, w, h);
         const nowMs = performance.now();
         const dt = Math.min(0.1, Math.max(0.001, (nowMs - lastTime) / 1000));
         lastTime = nowMs;
         trackHands(nowMs);
-        drawCreatures(nowMs / 1000, updateBody(nowMs / 1000, dt));
-        drawHandMarker();
+        updateBodies(nowMs / 1000, dt);
+        drawCreatures(nowMs / 1000);
+        drawHud(nowMs / 1000);
       }
       scheduleFrame();
     }
@@ -605,6 +467,7 @@
       stream = null;
       video.srcObject = null;
       ctx.clearRect(0, 0, canvas.width, canvas.height);
+      hctx.clearRect(0, 0, hud.width, hud.height);
       if (stage3d) stage3d.clear();
       banner.hidden = true;
     }
@@ -651,7 +514,6 @@
     }
 
     cameraSelect.addEventListener('change', () => start(cameraSelect.value));
-    nextBtn.addEventListener('click', nextCreature);
 
     toggleBtn.addEventListener('click', () => {
       if (stream) {
@@ -668,6 +530,7 @@
     mirrorBtn.addEventListener('click', () => {
       const on = canvas.classList.toggle('mirror');
       glCanvas.classList.toggle('mirror', on);
+      hud.classList.toggle('mirror', on);
       mirrorBtn.textContent = `Mirror: ${on ? 'on' : 'off'}`;
     });
 
@@ -678,8 +541,8 @@
       out.height = canvas.height;
       const o = out.getContext('2d');
       if (canvas.classList.contains('mirror')) { o.translate(out.width, 0); o.scale(-1, 1); }
-      o.drawImage(canvas, 0, 0);   // includes the photo creatures
-      if (style === '3d' && stage3d) o.drawImage(glCanvas, 0, 0, out.width, out.height);
+      o.drawImage(canvas, 0, 0);
+      if (stage3d) o.drawImage(glCanvas, 0, 0, out.width, out.height);   // the creatures
       const a = document.createElement('a');
       a.download = `snapshot-${new Date().toISOString().replace(/[:.]/g, '-')}.png`;
       a.href = out.toDataURL('image/png');
@@ -688,9 +551,6 @@
 
     setInterval(() => { document.getElementById('clock').textContent = new Date().toLocaleString(); }, 1000);
 
-    styleBtn.addEventListener('click', () => setStyle(style === '3d' ? '2d' : '3d'));
-
-    nextCreature();
     load3D();
     if (!navigator.mediaDevices?.getUserMedia) {
       setStatus(false, 'Unsupported');

@@ -651,6 +651,245 @@ function makeGlaucus() {
 }
 
 // ======================================================================
+// Barreleye fish (Macropinna microstoma): a see-through dome over its head,
+// with glowing green tube eyes inside that swivel from looking up to forward.
+// ======================================================================
+function makeBarreleye() {
+  const group = new THREE.Group();
+  const inner = new THREE.Group();
+  inner.scale.setScalar(1.25);
+  group.add(inner);
+  const mat = skin({
+    vertexColors: true, roughness: 0.36, metalness: 0.15, clearcoat: 0.8, clearcoatRoughness: 0.2,
+    sheen: 0.4, sheenColor: C(0xc9a27a), iridescence: 0.25, iridescenceIOR: 1.4
+  }, { bump: 0.0018, freq: 90, style: 2, rim: 0x1a120c, rimPow: 3 });
+  const dark = C(0x120e0c), bronze = C(0x3e2e22), silver = C(0x6f675c), belly = C(0x9a9384);
+
+  const Y = 0.3;
+  const body = new Tube(80, 26, mat, {
+    flatten: 1.45,   // taller than it is wide, like a real fish
+    color: (s, up, col) => {
+      col.lerpColors(belly, silver, smooth(-0.9, -0.1, up));
+      col.lerp(bronze, smooth(-0.1, 0.5, up));
+      col.lerp(dark, smooth(0.5, 0.95, up));
+      col.lerp(dark, 0.18 * (0.5 + 0.5 * Math.sin(s * 110)) * smooth(0.15, 0.3, s));   // rows of big scales
+      col.lerp(dark, smooth(0.9, 1, s) * 0.4);
+    }
+  });
+  inner.add(body.mesh);
+  const wave = (s, tm) => 0.03 * Math.sin(s * 5 - tm * 3) * (0.2 + s);
+  const center = (s, tm, out) => out.set(-0.5 + s, Y + 0.02 * Math.sin(s * Math.PI), wave(s, tm));
+  const radius = s => {
+    const head = Math.pow(Math.sin(Math.min(1, s / 0.26) * Math.PI / 2), 0.8);
+    const taper = s < 0.4 ? 1 : 1 - 0.8 * smooth(0.4, 0.97, s);
+    return 0.1 * head * taper * (1 + 0.08 * Math.sin(s * Math.PI)) + 0.006;
+  };
+
+  // the transparent shield over the head
+  const domeGeo = paint(new THREE.SphereGeometry(1, 56, 28, 0, TAU, 0, Math.PI / 2), (p, col) => col.setRGB(1, 1, 1));
+  domeGeo.scale(0.22, 0.25, 0.12);
+  const domeMat = skin({
+    color: 0xdff8ff, transparent: true, opacity: 0.3, roughness: 0.04, clearcoat: 1, clearcoatRoughness: 0.02,
+    iridescence: 0.6, iridescenceIOR: 1.35, side: THREE.DoubleSide, depthWrite: false, envMapIntensity: 1.6
+  }, { bump: 0, rim: 0xb0f0ff, rimPow: 1.5 });
+  const dome = new THREE.Mesh(domeGeo, domeMat);
+  dome.position.set(-0.33, Y + 0.08, 0);
+  dome.renderOrder = 2;
+
+  // glowing green tube eyes inside the dome
+  const eyeMat = new THREE.MeshPhysicalMaterial({ color: 0x2f7a3a, emissive: 0x2fbf45, emissiveIntensity: 0.6, roughness: 0.3, clearcoat: 1 });
+  const lensMat = new THREE.MeshPhysicalMaterial({ color: 0xc8ffc0, emissive: 0x6dff70, emissiveIntensity: 1.8, roughness: 0.1, clearcoat: 1 });
+  const glowTex = glowTexture();
+  const eyes = [];
+  for (const side of [-1, 1]) {
+    const pivot = new THREE.Group();
+    pivot.position.set(-0.34, Y + 0.1, side * 0.036);
+    const tube = new Tube(8, 14, eyeMat);
+    tube.update((u, o) => o.set(0, 0.1 * u, 0), u => 0.028 + 0.006 * u);
+    pivot.add(tube.mesh);
+    const lens = new THREE.Mesh(new THREE.SphereGeometry(0.034, 24, 12), lensMat);
+    lens.position.y = 0.1;
+    pivot.add(lens);
+    const glow = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex, color: 0x6dff70, blending: THREE.AdditiveBlending, transparent: true, depthWrite: false, opacity: 0.8 }));
+    glow.position.y = 0.105;
+    glow.scale.setScalar(0.2);
+    pivot.add(glow);
+    inner.add(pivot);
+    eyes.push(pivot);
+  }
+  inner.add(dome);
+
+  // the "nostrils" on the snout that look like eyes
+  const nostrilMat = new THREE.MeshPhysicalMaterial({ color: 0x050404, roughness: 0.2, clearcoat: 1 });
+  for (const side of [-1, 1]) {
+    const n = new THREE.Mesh(new THREE.SphereGeometry(0.013, 16, 8), nostrilMat);
+    n.position.set(-0.47, Y + 0.04, side * 0.042);
+    inner.add(n);
+  }
+
+  // big see-through fins
+  const finMat = new THREE.MeshPhysicalMaterial({
+    vertexColors: true, side: THREE.DoubleSide, transparent: true, opacity: 0.45,
+    roughness: 0.4, sheen: 0.3, sheenColor: C(0xb8ab94), depthWrite: false
+  });
+  const rayC = C(0x2a201a), webC = C(0x5a5048), edgeC = C(0x9a9084);
+  const pecs = [], pelvics = [];
+  for (const side of [-1, 1]) {
+    const pec = new THREE.Mesh(finGeometry(0.26, 1.1, 10, rayC, webC, edgeC), finMat);
+    pec.position.set(-0.2, Y - 0.05, side * 0.08);
+    inner.add(pec);
+    pecs.push({ fin: pec, side });
+    const pel = new THREE.Mesh(finGeometry(0.14, 0.9, 7, rayC, webC, edgeC), finMat);
+    pel.position.set(0.06, Y - 0.12, side * 0.04);
+    inner.add(pel);
+    pelvics.push({ fin: pel, side });
+  }
+  const tail = new THREE.Mesh(finGeometry(0.2, 1.25, 12, rayC, webC, edgeC), finMat);
+  inner.add(tail);
+  const dorsal = new THREE.Mesh(finGeometry(0.1, 0.8, 6, rayC, webC, edgeC), finMat);
+  dorsal.position.set(0.2, Y + 0.07, 0);
+  dorsal.rotation.z = 1.2;
+  inner.add(dorsal);
+
+  function update(tm) {
+    body.update((s, o) => center(s, tm, o), radius);
+    tail.position.set(0.5, Y, wave(1, tm));
+    tail.rotation.y = Math.atan(0.03 * 5 * 1.2 * Math.cos(5 - tm * 3)) * 1.4;
+    for (const { fin, side } of pecs) fin.rotation.set(0, -side * (0.6 + 0.3 * Math.sin(tm * 2.6 + side)), -0.5);
+    for (const { fin, side } of pelvics) fin.rotation.set(0, -side * (0.35 + 0.15 * Math.sin(tm * 2.6 + 1 + side)), -1.0);
+    // eyes drift between looking straight up through the dome and forward
+    const look = 0.95 * smooth(-0.35, 0.35, Math.sin(tm * 0.45));
+    for (const e of eyes) e.rotation.z = look;
+  }
+  update(0);
+  return { name: 'barreleye', group, update, mats: [mat, domeMat], turn: 0.5, tilt: 0.12 };
+}
+
+// ======================================================================
+// Atolla jellyfish: a deep-red pulsing bell with a ring of blue lights that
+// ripple round the rim (its "burglar alarm"), and one extra-long tentacle.
+// ======================================================================
+function makeAtolla() {
+  const group = new THREE.Group();
+  const bellMat = skin({
+    vertexColors: true, roughness: 0.22, clearcoat: 1, clearcoatRoughness: 0.1,
+    transparent: true, opacity: 0.92, sheen: 0.25, sheenColor: C(0xc02030), side: THREE.DoubleSide
+  }, { bump: 0.0015, freq: 70, style: 0, rim: 0x5a0418, rimPow: 2.2 });
+  const tentMat = skin({
+    vertexColors: true, roughness: 0.35, clearcoat: 0.6, transparent: true, opacity: 0.85
+  }, { bump: 0.0008, freq: 120, style: 2, rim: 0x3a0210, rimPow: 2 });
+  const R = 0.36, TOP = 0.98, H = 0.2, LOBES = 22;
+  const crimson = C(0x6a0514), deep = C(0x34030b), pale = C(0xa8243a), groove = C(0x1c0206);
+
+  const rimRho = (phi, pulse) => R * (1 - 0.09 * pulse) * (1 + 0.05 * (0.5 + 0.5 * Math.cos(LOBES * phi))) * (1 - 0.06 * pulse);
+  const rimY = pulse => TOP - H * (1 + 0.15 * pulse);
+  function profile(t, phi, pulse, out) {
+    let rho, y;
+    if (t < 0.72) {                        // outside of the bell
+      const a = (t / 0.72) * Math.PI / 2, edge = smooth(0.75, 1, t / 0.72);
+      const lobe = 0.5 + 0.5 * Math.cos(LOBES * phi);
+      rho = R * Math.sin(a) * (1 - 0.09 * pulse) * (1 + 0.05 * lobe * edge) * (1 - 0.06 * pulse * edge);
+      rho -= 0.012 * Math.exp(-(((a - 1.0) / 0.08) ** 2));   // the coronal groove
+      y = TOP - H * (1 + 0.15 * pulse) * (1 - Math.cos(a));
+    } else {                               // underside, curving up into the bell
+      const s = (t - 0.72) / 0.28;
+      rho = rimRho(phi, pulse) * (1 - s);
+      y = rimY(pulse) + 0.1 * Math.sin(s * Math.PI / 2);
+    }
+    return out.set(rho * Math.cos(phi), y, rho * Math.sin(phi));
+  }
+
+  const bell = new Surface(72, 132, bellMat);
+  const v = new THREE.Vector3(), c = new THREE.Color();
+  bell.forEach((t, phi, k) => {
+    profile(t, phi, 0, v).toArray(bell.pos, k * 3);
+    const n = fbm(v.x * 9, v.y * 9, v.z * 9, 3);
+    if (t < 0.72) {
+      const a = (t / 0.72) * Math.PI / 2;
+      c.lerpColors(pale, crimson, smooth(0, 0.45, a));
+      c.lerp(groove, 0.7 * Math.exp(-(((a - 1.0) / 0.1) ** 2)));
+      c.lerp(pale, smooth(1.3, 1.57, a) * 0.5 * (0.5 + 0.5 * Math.cos(LOBES * phi)));
+    } else {
+      c.lerpColors(deep, groove, smooth(0.3, 1, (t - 0.72) / 0.28));
+    }
+    c.lerp(deep, clamp(n + 0.2, 0, 0.4));
+    c.toArray(bell.col, k * 3);
+  });
+  bell.commit();
+  group.add(bell.mesh);
+
+  // a dark stomach glowing faintly through the top of the bell
+  const stomach = new THREE.Mesh(new THREE.SphereGeometry(0.11, 32, 16), new THREE.MeshPhysicalMaterial({
+    color: 0x3a0208, emissive: 0x700018, emissiveIntensity: 0.35, roughness: 0.4, transparent: true, opacity: 0.85
+  }));
+  stomach.scale.y = 0.55;
+  stomach.position.y = TOP - 0.1;
+  group.add(stomach);
+
+  // tentacles hanging from the notches between the lobes, plus one long trailing one
+  const tentCol = (s, up, col) => col.lerpColors(pale, crimson, smooth(0, 0.6, s)).lerp(C(0xf2b0b8), smooth(0.8, 1, s) * 0.5);
+  const tentacles = [];
+  for (let k = 0; k < LOBES; k++) {
+    const tube = new Tube(30, 6, tentMat, { color: tentCol });
+    group.add(tube.mesh);
+    tentacles.push({ tube, phi: (k + 0.5) * TAU / LOBES, k, L: 0.38 + 0.18 * ((k * 7) % 5) / 4, r: 0.0045 });
+  }
+  const longOne = new Tube(60, 8, tentMat, { color: tentCol });
+  group.add(longOne.mesh);
+  tentacles.push({ tube: longOne, phi: 0.3, k: 99, L: 0.8, r: 0.012, long: true });
+
+  // the ring of blue lights
+  const lights = [];
+  const blueTex = glowTexture();
+  for (let i = 0; i < LOBES; i++) {
+    const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: blueTex, color: 0x4fc3ff, blending: THREE.AdditiveBlending, transparent: true, depthWrite: false }));
+    group.add(s);
+    lights.push(s);
+  }
+  const anchor = new THREE.Object3D();
+  anchor.position.y = TOP - 0.15;
+  group.add(anchor);
+  const light = new THREE.PointLight(0x5fc8ff, 0, 1, 0);
+
+  const P = new THREE.Vector3();
+  function update(tm, scalePx) {
+    const pulse = Math.pow(0.5 + 0.5 * Math.sin(tm * 2.2), 2);   // quick squeeze, slow relax
+    bell.forEach((t, phi, k) => profile(t, phi, pulse, v).toArray(bell.pos, k * 3));
+    bell.commit();
+    group.position.y = 0.03 * pulse;
+
+    const ry = rimY(pulse);
+    for (const tn of tentacles) {
+      const { phi, k, L, r, long } = tn, cp = Math.cos(phi), sp = Math.sin(phi);
+      const rho0 = rimRho(phi, pulse) * 0.96;
+      tn.tube.update((s, o) => {
+        const sway = (long ? 0.13 : 0.07) * Math.pow(s, 1.2) * Math.sin(tm * (long ? 1.1 : 1.8) + k + s * (long ? 7 : 6));
+        const out = rho0 + (long ? 0.1 : 0.04) * s + 0.02 * Math.sin(tm * 1.3 + k) * s;
+        o.set(cp * out - sp * sway, ry - L * s, sp * out + cp * sway);
+      }, s => r * (1 - 0.75 * s) + 0.0015);
+    }
+
+    // a wave of light racing round the rim
+    let total = 0;
+    lights.forEach((sp, i) => {
+      const phi = i * TAU / LOBES;
+      const b = Math.pow(0.5 + 0.5 * Math.sin(tm * 5 - i * TAU / LOBES * 2), 4);
+      total += b;
+      P.set(Math.cos(phi) * rimRho(phi, pulse) * 0.97, ry - 0.01, Math.sin(phi) * rimRho(phi, pulse) * 0.97);
+      sp.position.copy(P);
+      sp.scale.setScalar(0.09 + 0.14 * b);
+      sp.material.opacity = 0.45 + 0.55 * b;
+    });
+    anchor.updateWorldMatrix(true, false);
+    anchor.getWorldPosition(light.position);
+    light.intensity = 0.8 + 1.6 * total / LOBES;
+    light.distance = 1.3 * scalePx;
+  }
+  update(0, 100);
+  return { name: 'atolla', group, update, mats: [bellMat, tentMat], light, turn: 0, tilt: 0.35 };
+}
+
+// ======================================================================
 // Stage: one renderer, a camera matched to canvas pixels, and the lights.
 // ======================================================================
 export function createStage(canvas) {
@@ -672,7 +911,7 @@ export function createStage(canvas) {
   scene.add(key, rim);
 
   const camera = new THREE.PerspectiveCamera(30, 16 / 9, 1, 10000);
-  const creatures = [makeDumbo(), makeAngler(), makeGlaucus()];
+  const creatures = [makeDumbo(), makeAngler(), makeGlaucus(), makeBarreleye(), makeAtolla()];
   for (const c of creatures) {
     c.root = new THREE.Group();
     c.yawGroup = new THREE.Group();
@@ -687,7 +926,7 @@ export function createStage(canvas) {
   let w = 0, h = 0;
   return {
     count: creatures.length,
-    // items: [{ index, x, y, size, facing, scale, spin }] in canvas pixels
+    // items: [{ index, x, y, z, size, facing, scale, spin }] in canvas pixels (z > 0 is towards you)
     render(W, H, t, items) {
       if (W !== w || H !== h) {
         w = W; h = H;
@@ -704,7 +943,7 @@ export function createStage(canvas) {
         const c = creatures[it.index];
         const px = Math.max(1e-3, it.size * it.scale);
         c.root.visible = true;
-        c.root.position.set(it.x - W / 2, H / 2 - it.y, 0);
+        c.root.position.set(it.x - W / 2, H / 2 - it.y, it.z || 0);
         c.root.scale.setScalar(px);
         c.root.rotation.set(c.tilt, 0, it.spin || 0);
         const goal = it.facing < 0 ? c.turn : Math.PI - c.turn;
