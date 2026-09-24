@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Live Camera Feed</title>
+  <style>
+    :root {
+      --bg: #f4f4f2;
+      --panel: #ffffff;
+      --text: #1a1a1a;
+      --muted: #6b6b6b;
+      --border: #dcdcd8;
+      --accent: #d7263d;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #111112;
+        --panel: #1b1b1d;
+        --text: #eeeeee;
+        --muted: #9a9a9a;
+        --border: #2e2e31;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 24px 16px;
+      gap: 16px;
+    }
+    header {
+      width: 100%;
+      max-width: 960px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    h1 { font-size: 20px; margin: 0; font-weight: 600; }
+    .status { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
+    .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); }
+    .live .dot { background: var(--accent); animation: pulse 1.4s infinite; }
+    .live { color: var(--text); }
+    @keyframes pulse { 50% { opacity: .35; } }
+    .stage {
+      width: 100%;
+      max-width: 960px;
+      aspect-ratio: 16 / 9;
+      background: #000;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      position: relative;
+      display: grid;
+      place-items: center;
+    }
+    video { width: 100%; height: 100%; object-fit: contain; }
+    video.mirror { transform: scaleX(-1); }
+    .message {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      text-align: center;
+      color: #ccc;
+    }
+    .controls {
+      width: 100%;
+      max-width: 960px;
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    button, select {
+      font: inherit;
+      padding: 8px 14px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--panel);
+      color: var(--text);
+      cursor: pointer;
+    }
+    select { max-width: 100%; }
+    button:hover { border-color: var(--muted); }
+    .clock { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Live Camera Feed</h1>
+    <div class="status" id="status"><span class="dot"></span><span id="statusText">Starting…</span></div>
+  </header>
+
+  <div class="stage">
+    <video id="video" class="mirror" autoplay playsinline muted></video>
+    <div class="message" id="message">Requesting camera access…</div>
+  </div>
+
+  <div class="controls">
+    <select id="cameraSelect" aria-label="Camera" hidden></select>
+    <button id="toggleBtn">Pause</button>
+    <button id="mirrorBtn">Mirror: on</button>
+    <button id="snapBtn">Save snapshot</button>
+    <span class="clock" id="clock"></span>
+  </div>
+
+  <script>
+    const video = document.getElementById('video');
+    const message = document.getElementById('message');
+    const statusEl = document.getElementById('status');
+    const statusText = document.getElementById('statusText');
+    const cameraSelect = document.getElementById('cameraSelect');
+    const toggleBtn = document.getElementById('toggleBtn');
+    const mirrorBtn = document.getElementById('mirrorBtn');
+    const snapBtn = document.getElementById('snapBtn');
+    let stream = null;
+
+    function setStatus(live, text) {
+      statusEl.classList.toggle('live', live);
+      statusText.textContent = text;
+    }
+
+    function stop() {
+      if (stream) stream.getTracks().forEach(t => t.stop());
+      stream = null;
+      video.srcObject = null;
+    }
+
+    async function start(deviceId) {
+      stop();
+      message.hidden = false;
+      message.textContent = 'Requesting camera access…';
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: deviceId ? { deviceId: { exact: deviceId }, width: { ideal: 1920 }, height: { ideal: 1080 } }
+                          : { width: { ideal: 1920 }, height: { ideal: 1080 } },
+          audio: false
+        });
+        video.srcObject = stream;
+        message.hidden = true;
+        const track = stream.getVideoTracks()[0];
+        const s = track.getSettings();
+        setStatus(true, `LIVE · ${s.width}×${s.height}`);
+        toggleBtn.textContent = 'Pause';
+        await listCameras(s.deviceId);
+      } catch (err) {
+        setStatus(false, 'Offline');
+        message.textContent = err.name === 'NotAllowedError'
+          ? 'Camera access was denied. Allow camera access for this page in your browser (and in System Settings → Privacy & Security → Camera), then reload.'
+          : `Could not start the camera: ${err.message || err.name}`;
+      }
+    }
+
+    async function listCameras(activeId) {
+      const devices = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput');
+      cameraSelect.innerHTML = '';
+      devices.forEach((d, i) => {
+        const opt = document.createElement('option');
+        opt.value = d.deviceId;
+        opt.textContent = d.label || `Camera ${i + 1}`;
+        if (d.deviceId === activeId) opt.selected = true;
+        cameraSelect.appendChild(opt);
+      });
+      cameraSelect.hidden = devices.length < 2;
+    }
+
+    cameraSelect.addEventListener('change', () => start(cameraSelect.value));
+
+    toggleBtn.addEventListener('click', () => {
+      if (stream) {
+        stop();
+        setStatus(false, 'Paused');
+        message.hidden = false;
+        message.textContent = 'Feed paused.';
+        toggleBtn.textContent = 'Resume';
+      } else {
+        start(cameraSelect.value || undefined);
+      }
+    });
+
+    mirrorBtn.addEventListener('click', () => {
+      const on = video.classList.toggle('mirror');
+      mirrorBtn.textContent = `Mirror: ${on ? 'on' : 'off'}`;
+    });
+
+    snapBtn.addEventListener('click', () => {
+      if (!stream) return;
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const ctx = canvas.getContext('2d');
+      if (video.classList.contains('mirror')) {
+        ctx.translate(canvas.width, 0);
+        ctx.scale(-1, 1);
+      }
+      ctx.drawImage(video, 0, 0);
+      const a = document.createElement('a');
+      a.download = `snapshot-${new Date().toISOString().replace(/[:.]/g, '-')}.png`;
+      a.href = canvas.toDataURL('image/png');
+      a.click();
+    });
+
+    setInterval(() => { document.getElementById('clock').textContent = new Date().toLocaleString(); }, 1000);
+
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setStatus(false, 'Unsupported');
+      message.textContent = 'This browser does not support camera access. Open the page at http://localhost:8000 in Chrome, Safari, or Firefox.';
+    } else {
+      start();
+    }
+  </script>
+</body>
+</html>
