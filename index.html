@@ -174,12 +174,13 @@
     let stream = null;
 
     // The 3D creatures from creatures3d.js, in the same order it builds them.
+    //   r: collision radius and cy: height of its middle, both as a fraction of its size
     const CREATURES = [
-      { name: 'Dumbo octopus', fact: 'Flaps ear-like fins to swim. It lives deeper than any other known octopus.' },
-      { name: 'Anglerfish', fact: 'Dangles a glowing lure from its head to tempt prey into its toothy mouth.' },
-      { name: 'Blue dragon', fact: 'A tiny sea slug that floats upside down and steals stinging cells from the jellyfish it eats.' },
-      { name: 'Barreleye fish', fact: 'Its head is see-through, and its glowing green eyes swivel to look up through it.' },
-      { name: 'Atolla jellyfish', fact: 'When attacked it sets off a ring of flashing blue lights, like a burglar alarm.' }
+      { name: 'Dumbo octopus', r: 0.4, cy: 0.42, fact: 'Flaps ear-like fins to swim. It lives deeper than any other known octopus.' },
+      { name: 'Anglerfish', r: 0.45, cy: 0.45, fact: 'Dangles a glowing lure from its head to tempt prey into its toothy mouth.' },
+      { name: 'Blue dragon', r: 0.38, cy: 0.22, fact: 'A tiny sea slug that floats upside down and steals stinging cells from the jellyfish it eats.' },
+      { name: 'Barreleye fish', r: 0.5, cy: 0.42, fact: 'Its head is see-through, and its glowing green eyes swivel to look up through it.' },
+      { name: 'Atolla jellyfish', r: 0.42, cy: 0.55, fact: 'When attacked it sets off a ring of flashing blue lights, like a burglar alarm.' }
     ];
 
     let stage3d = null;          // null = loading, false = failed
@@ -238,6 +239,7 @@
       });
 
       if (!cands.length) {
+        if (hand) hand.fresh = false;
         if (hand && nowMs - hand.seen > 250) hand = null;   // gone for a moment = gone
         return;
       }
@@ -249,8 +251,8 @@
       const pinched = wasPinched ? c.ratio < 0.5 : c.ratio < 0.33;
       const k = 0.65;   // light smoothing: steady, but still feels attached to your fingers
       hand = hand
-        ? { x: hand.x + (c.x - hand.x) * k, y: hand.y + (c.y - hand.y) * k, pinched, wasPinched, seen: nowMs }
-        : { x: c.x, y: c.y, pinched, wasPinched: false, seen: nowMs };
+        ? { x: hand.x + (c.x - hand.x) * k, y: hand.y + (c.y - hand.y) * k, pinched, wasPinched, seen: nowMs, fresh: true }
+        : { x: c.x, y: c.y, pinched, wasPinched: false, seen: nowMs, fresh: true };
     }
 
     // ======================================================================
@@ -270,7 +272,8 @@
       return CREATURES.map((_, i) => {
         const x = W * (0.14 + 0.72 * i / (CREATURES.length - 1)), y = H * (0.5 + 0.28 * (i % 2));
         return { index: i, x, y, vx: 0, vy: 0, facing: i % 2 ? 1 : -1, wx: x, wy: y,
-                 nextWander: now + 2 + i, wiggle: 0, born: now + 0.3 + i * 0.35, bubbled: false };
+                 nextWander: now + 2 + i, coastUntil: 0, wiggle: 0, born: now + 0.3 + i * 0.35, bubbled: false,
+                 sq: 0, sqv: 0, nx: 1, ny: 0, pen: 0 };
       });
     }
 
@@ -278,13 +281,53 @@
       const size = creatureSize();
       let best = null, bestD = Infinity;
       for (const b of bodies) {
-        const cx = b.x, cy = b.y - size * 0.5;
-        if (Math.abs(px - cx) < size * 0.7 && Math.abs(py - cy) < size * 0.7) {
-          const d = Math.hypot(px - cx, py - cy);
-          if (d < bestD) { bestD = d; best = b; }
-        }
+        const c = CREATURES[b.index], cx = b.x, cy = b.y - size * c.cy;
+        const d = Math.hypot(px - cx, py - cy);
+        if (d < size * (c.r + 0.2) && d < bestD) { bestD = d; best = b; }
       }
       return best;
+    }
+
+    // Soft, solid bodies: when two creatures overlap they push apart with a
+    // springy force, so they squash into each other for a moment and bounce off.
+    const STIFF = 450, DAMP = 7;   // spring (1/s²) and damping (1/s) of a contact
+    function collide(size, dt, now) {
+      for (const b of bodies) b.pen = 0;
+      for (let i = 0; i < bodies.length; i++) for (let j = i + 1; j < bodies.length; j++) {
+        const a = bodies[i], b = bodies[j];
+        if (now < a.born || now < b.born) continue;
+        const ca = CREATURES[a.index], cb = CREATURES[b.index];
+        const ax = a.x, ay = a.y - size * ca.cy, bx = b.x, by = b.y - size * cb.cy;
+        let dx = bx - ax, dy = by - ay;
+        const d = Math.hypot(dx, dy) || 0.01, reach = size * (ca.r + cb.r);
+        if (d >= reach) continue;
+        dx /= d; dy /= d;
+        const pen = reach - d;
+        // the one you're holding is solid as a paddle: it pushes, but isn't pushed
+        const wa = a === held ? 0 : 1, wb = b === held ? 0 : 1, wsum = wa + wb;
+        if (!wsum) continue;
+        const vn = (b.vx - a.vx) * dx + (b.vy - a.vy) * dy;       // closing speed along the contact
+        const f = (STIFF * pen - DAMP * vn * (vn < 0 ? 1 : 0.3)) * dt;
+        a.vx -= dx * f * wa / wsum * 2; a.vy -= dy * f * wa / wsum * 2;
+        b.vx += dx * f * wb / wsum * 2; b.vy += dy * f * wb / wsum * 2;
+        // never let them pass through each other, however hard they're thrown
+        const hard = pen - reach * 0.35;
+        if (hard > 0) {
+          a.x -= dx * hard * wa / wsum; a.y -= dy * hard * wa / wsum;
+          b.x += dx * hard * wb / wsum; b.y += dy * hard * wb / wsum;
+        }
+        for (const [o, r] of [[a, ca.r], [b, cb.r]]) {
+          const k = pen / (size * r * 2);
+          if (k > o.pen) { o.pen = k; o.nx = dx; o.ny = dy; }
+        }
+        if (vn < -size * 2.2 && Math.random() < 0.5) spawnBubbles((ax + bx) / 2, (ay + by) / 2 + size * 0.4, size * 0.5, now);
+      }
+      // the squash itself is a little spring too, so it wobbles after a bump
+      for (const b of bodies) {
+        const target = Math.min(0.35, b.pen * 2);
+        b.sqv += (420 * (target - b.sq) - 14 * b.sqv) * dt;
+        b.sq = Math.max(-0.15, Math.min(0.4, b.sq + b.sqv * dt));
+      }
     }
 
     function spawnBubbles(x, y, size, at) {
@@ -312,7 +355,8 @@
 
       // letting go, or catching one
       if (held && (!hand || !hand.pinched)) {
-        held.nextWander = now + 2.5;       // it keeps your hand's momentum, so you can throw it
+        held.coastUntil = now + 2.8;       // it keeps your hand's momentum, so you can throw it off the screen
+        held.nextWander = held.coastUntil;
         spawnBubbles(held.x, held.y, size, now);
         held = null;
       } else if (!held && hand && hand.pinched && !hand.wasPinched) {
@@ -327,42 +371,41 @@
       }
 
       const minX = size * 0.55, maxX = W - size * 0.55, minY = size * 1.05, maxY = H - size * 0.02;
+      collide(size, dt, now);
       for (const b of bodies) {
         if (!b.bubbled && now >= b.born) { b.bubbled = true; spawnBubbles(b.x, b.y, size, now); }
-        if (b === held) {
+        if (b === held && !hand.fresh) {
+          // hand briefly out of sight (often mid-throw): keep flying at the hand's last speed
+          b.x += b.vx * dt;
+          b.y += b.vy * dt;
+        } else if (b === held) {
           const tx = hand.x + b.offX, ty = hand.y + b.offY;
           const nx = b.x + (tx - b.x) * 0.7, ny = b.y + (ty - b.y) * 0.7;
           b.vx = b.vx * 0.5 + ((nx - b.x) / dt) * 0.5;
           b.vy = b.vy * 0.5 + ((ny - b.y) / dt) * 0.5;
           b.x = nx; b.y = ny;
         } else {
-          // Swim about: drift towards a wandering target, with water drag.
-          if (now > b.nextWander) {
+          // Swim about: drift towards a wandering target, with water drag. The edges of the
+          // picture aren't walls: a thrown creature coasts off screen, then swims back in.
+          const coasting = now < b.coastUntil;
+          if (!coasting && now > b.nextWander) {
             b.wx = minX + Math.random() * (maxX - minX);
             b.wy = minY + Math.random() * (maxY - minY);
             b.nextWander = now + 4 + Math.random() * 5;
           }
-          const drag = Math.exp(-dt * 1.4);
-          b.vx = b.vx * drag + (b.wx - b.x) * 0.22 * dt;
-          b.vy = b.vy * drag + (b.wy - b.y) * 0.22 * dt;
-          // keep a little personal space
-          for (const o of bodies) {
-            if (o === b) continue;
-            const dx = b.x - o.x, dy = b.y - o.y, d = Math.hypot(dx, dy) || 1;
-            if (d < size * 0.9) {
-              const push = (size * 0.9 - d) / (size * 0.9) * size * 3 * dt;
-              b.vx += dx / d * push; b.vy += dy / d * push;
-            }
+          const drag = Math.exp(-dt * (coasting ? 0.7 : 1.4));
+          b.vx *= drag; b.vy *= drag;
+          if (!coasting) {
+            b.vx += (b.wx - b.x) * 0.22 * dt;
+            b.vy += (b.wy - b.y) * 0.22 * dt;
           }
-          const max = W * 1.5, sp = Math.hypot(b.vx, b.vy);
+          const max = W * 2.5, sp = Math.hypot(b.vx, b.vy);
           if (sp > max) { b.vx *= max / sp; b.vy *= max / sp; }
           b.x += b.vx * dt;
           b.y += b.vy * dt;
-          // bounce gently off the edges of the picture
-          if (b.x < minX) { b.x = minX; b.vx = Math.abs(b.vx) * 0.5; }
-          if (b.x > maxX) { b.x = maxX; b.vx = -Math.abs(b.vx) * 0.5; }
-          if (b.y < minY) { b.y = minY; b.vy = Math.abs(b.vy) * 0.5; }
-          if (b.y > maxY) { b.y = maxY; b.vy = -Math.abs(b.vy) * 0.5; }
+          // don't let it get lost for good: far off screen, it stops and turns back
+          if (b.x < -W || b.x > 2 * W) { b.x = Math.max(-W, Math.min(2 * W, b.x)); b.vx = 0; }
+          if (b.y < -H || b.y > 2 * H) { b.y = Math.max(-H, Math.min(2 * H, b.y)); b.vy = 0; }
         }
         // Look the way it's moving; struggle a bit while held.
         if (Math.abs(b.vx) > size * 0.15) b.facing = b.vx > 0 ? -1 : 1;
@@ -385,7 +428,8 @@
         if (now < b.born) continue;
         items.push({
           index: b.index, x: b.x, y: b.y, size, facing: b.facing,
-          z: b === held ? size * 0.6 : 0,          // the one you're holding comes towards you
+          z: b === held ? size * 0.3 : 0,          // the one you're holding comes towards you
+          squash: { amount: b.sq, nx: b.nx, ny: b.ny },
           scale: easeOutBack(Math.min(1, (now - b.born) / POP_IN)),
           spin: -b.wiggle
         });
@@ -440,7 +484,7 @@
         if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; bodies = null; held = null; }
         ctx.drawImage(video, 0, 0, w, h);
         const nowMs = performance.now();
-        const dt = Math.min(0.1, Math.max(0.001, (nowMs - lastTime) / 1000));
+        const dt = Math.min(1 / 30, Math.max(0.001, (nowMs - lastTime) / 1000));   // small steps keep the springy contacts stable
         lastTime = nowMs;
         trackHands(nowMs);
         updateBodies(nowMs / 1000, dt);

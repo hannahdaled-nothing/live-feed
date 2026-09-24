@@ -926,7 +926,8 @@ export function createStage(canvas) {
   let w = 0, h = 0;
   return {
     count: creatures.length,
-    // items: [{ index, x, y, z, size, facing, scale, spin }] in canvas pixels (z > 0 is towards you)
+    // items: [{ index, x, y, z, size, facing, scale, spin, squash }] in canvas pixels (z > 0 is towards you)
+    // squash: { amount, nx, ny } flattens the creature along the screen direction (nx, ny), bulging it sideways
     render(W, H, t, items) {
       if (W !== w || H !== h) {
         w = W; h = H;
@@ -944,7 +945,12 @@ export function createStage(canvas) {
         const px = Math.max(1e-3, it.size * it.scale);
         c.root.visible = true;
         c.root.position.set(it.x - W / 2, H / 2 - it.y, it.z || 0);
-        c.root.scale.setScalar(px);
+        const q = it.squash;
+        if (q && q.amount) {
+          // squash along the contact direction, bulge across it (roughly keeping volume)
+          const ax = Math.abs(q.nx), ay = Math.abs(q.ny), k = q.amount;
+          c.root.scale.set(px * (1 - k * ax + 0.5 * k * ay), px * (1 - k * ay + 0.5 * k * ax), px * (1 + 0.35 * k));
+        } else c.root.scale.setScalar(px);
         c.root.rotation.set(c.tilt, 0, it.spin || 0);
         const goal = it.facing < 0 ? c.turn : Math.PI - c.turn;
         c.yaw = c.yaw === null ? goal : c.yaw + (goal - c.yaw) * 0.08;
